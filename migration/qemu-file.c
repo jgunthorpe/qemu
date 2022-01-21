@@ -866,3 +866,35 @@ QIOChannel *qemu_file_get_ioc(QEMUFile *file)
 {
     return file->has_ioc ? QIO_CHANNEL(file->opaque) : NULL;
 }
+
+/*
+ * Read size bytes from QEMUFile f and write them to fd.
+ */
+int qemu_file_get_to_fd(QEMUFile *f, int fd, size_t size)
+{
+    while (size) {
+        size_t chunk_size = f->buf_size - f->buf_index;
+        ssize_t rc;
+
+        if (!chunk_size) {
+            rc = qemu_fill_buffer(f);
+            if (rc < 0)
+                return rc;
+            if (rc == 0)
+                return -1;
+            continue;
+        }
+
+        if (chunk_size > size)
+            chunk_size = size;
+
+        rc = write(fd, f->buf + f->buf_index, chunk_size);
+        if (rc < 0)
+            return rc;
+        if (rc == 0)
+            return -1;
+        f->buf_index += rc;
+        size -= rc;
+    }
+    return 0;
+}
