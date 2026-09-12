@@ -1243,6 +1243,10 @@ static void arm_cpu_initfn(Object *obj)
     QLIST_INIT(&cpu->el_change_hooks);
     QLIST_INIT(&cpu->cpreg_mig_tolerances);
 
+#ifndef CONFIG_USER_ONLY
+    arm_firmware_smc_registry_init(&cpu->firmware_smc_registry);
+#endif
+
 #ifdef CONFIG_USER_ONLY
 # ifdef TARGET_AARCH64
     /*
@@ -1725,6 +1729,10 @@ static void arm_cpu_finalizefn(Object *obj)
     ARMCPRegMigTolerance *t, *n;
 
     g_hash_table_destroy(cpu->cp_regs);
+
+#ifndef CONFIG_USER_ONLY
+    arm_firmware_smc_registry_destroy(&cpu->firmware_smc_registry);
+#endif
 
     QLIST_FOREACH_SAFE(hook, &cpu->pre_el_change_hooks, node, next) {
         QLIST_REMOVE(hook, node);

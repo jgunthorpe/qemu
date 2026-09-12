@@ -50,6 +50,9 @@ tests = {
   'test-interval-tree': [],
   'test-fifo': [],
   'test-envlist': [],
+  'test-arm-firmware-smc': [
+    meson.project_source_root() / 'target/arm/firmware-smc-registry.c'
+  ],
 }
 
 if have_system or have_tools

@@ -36,6 +36,7 @@
 #include "target/arm/mmuidx.h"
 #include "hw/intc/arm_gicv5_types.h"
 #include "target/arm/vector-type.h"
+#include "target/arm/firmware-smc.h"
 
 #define EXCP_UDEF            1   /* undefined instruction */
 #define EXCP_SWI             2   /* software interrupt */
@@ -1030,6 +1031,11 @@ struct ArchCPU {
      * 0 - disabled, 1 - smc, 2 - hvc
      */
     uint32_t psci_conduit;
+
+#ifndef CONFIG_USER_ONLY
+    /* Immutable after the CPU starts executing; not guest-visible state. */
+    ARMFirmwareSMCRegistry firmware_smc_registry;
+#endif
 
     /* For v8M, initial value of the Secure VTOR */
     uint32_t init_svtor;
@@ -2627,6 +2633,25 @@ enum {
 };
 
 #ifndef CONFIG_USER_ONLY
+/**
+ * arm_cpu_register_firmware_smc_provider:
+ * @cpu: CPU whose in-process firmware will provide the functions
+ * @route: conduit and exact function-ID set (copied by this function)
+ * @handler: callback invoked synchronously with the BQL held
+ * @opaque: callback data
+ * @errp: error return
+ *
+ * Register during machine initialization, before PHASE_MACHINE_READY.  Routes
+ * on the same conduit must not overlap.  Registration is permanent for the
+ * CPU's lifetime; @opaque and @handler must remain valid until the CPU is
+ * finalized.  No callback is made during registration or by pre_smc/pre_hvc;
+ * it is made only from the exception dispatcher after the guest has executed
+ * SMC/HVC.  The callback must return normally and must not release the BQL.
+ */
+bool arm_cpu_register_firmware_smc_provider(
+    ARMCPU *cpu, const ARMFirmwareSMCRoute *route,
+    ARMFirmwareSMCHandler *handler, void *opaque, Error **errp);
+
 /* Return the address space index to use for a memory access */
 static inline int arm_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
 {

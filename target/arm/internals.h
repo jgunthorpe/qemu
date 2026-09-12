@@ -714,6 +714,12 @@ bool arm_is_psci_call(ARMCPU *cpu, int excp_type);
 /* Actually handle a PSCI call */
 void arm_handle_psci_call(ARMCPU *cpu);
 
+/* Match only CPU-owned immutable route metadata. */
+bool arm_is_firmware_smc_call(ARMCPU *cpu, int excp_type);
+
+/* Invoke the provider callback with the BQL held. */
+void arm_handle_firmware_smc_call(ARMCPU *cpu);
+
 /**
  * arm_clear_exclusive: clear the exclusive monitor
  * @env: CPU env
