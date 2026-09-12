@@ -20,6 +20,7 @@
 #include "cpu.h"
 #include "helper.h"
 #include "kvm-consts.h"
+#include "target/arm/smccc.h"
 #include "qemu/main-loop.h"
 #include "system/runstate.h"
 #include "internals.h"
@@ -92,6 +93,10 @@ void arm_handle_psci_call(ARMCPU *cpu)
         CPUState *target_cpu_state;
         ARMCPU *target_cpu;
 
+    case QEMU_SMCCC_VERSION_FN:
+        /* SMCCC_VERSION and its discovery mechanism were added in v1.1. */
+        ret = QEMU_SMCCC_VERSION_1_1;
+        break;
     case QEMU_PSCI_0_2_FN_PSCI_VERSION:
         ret = QEMU_PSCI_VERSION_1_1;
         break;
@@ -176,6 +181,10 @@ void arm_handle_psci_call(ARMCPU *cpu)
         break;
     case QEMU_PSCI_1_0_FN_PSCI_FEATURES:
         switch (param[1]) {
+        case QEMU_SMCCC_VERSION_FN:
+            /* No feature flags are defined for SMCCC_VERSION. */
+            ret = QEMU_PSCI_RET_SUCCESS;
+            break;
         case QEMU_PSCI_0_2_FN_PSCI_VERSION:
         case QEMU_PSCI_0_2_FN_MIGRATE_INFO_TYPE:
         case QEMU_PSCI_0_2_FN_AFFINITY_INFO:
