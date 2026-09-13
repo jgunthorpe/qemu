@@ -116,6 +116,12 @@ virtualization
   Set ``on``/``off`` to enable/disable emulating a guest CPU which implements the
   Arm Virtualization Extensions. The default is ``off``.
 
+x-drtm
+  Set ``on``/``off`` to enable/disable the experimental Arm Dynamic Root of
+  Trust for Measurement (DRTM) firmware interface.  See `Arm DRTM firmware
+  interface`_ for its scope and configuration requirements.  The default
+  is ``off``.  Builds without the DRTM implementation reject this option.
+
 mte
   Set ``on``/``off`` to enable/disable emulating a guest CPU which implements the
   Arm Memory Tagging Extensions. The default is ``off``.
@@ -314,6 +320,172 @@ User-creatable SMMUv3 devices
   guest issues SMMU invalidation commands directly to real hardware,
   bypassing QEMU and improving throughput for workloads that issue many
   invalidations. Without it, every invalidation command traps into QEMU.
+
+Arm DRTM firmware interface
+"""""""""""""""""""""""""""
+
+The experimental ``x-drtm`` machine option provides a software model of the
+firmware-backed Arm DRTM interface described by DEN0113 version 1.4B.  QEMU
+models both the D-CRTM and DCE stages and handles the DRTM SMC64 calls
+alongside its PSCI implementation; a guest EL3 implementation is not
+required.
+
+The interface is intended for development and functional validation of
+DRTM-aware firmware and launch environments.  It models the ABI, data
+structures, state transitions, measurements, and control transfer.  It does
+not provide the security guarantees required of a conforming DRTM
+implementation and must not be used as a root of trust.  The interface and
+required machine configuration may change before the ``x-`` prefix is
+removed.
+
+Configuration
+^^^^^^^^^^^^^
+
+DRTM is available only with ``qemu-system-aarch64`` and TCG.  It requires a
+Non-secure AArch64 guest with EL2 and a configured TPM 2.0 path.  For
+example, the machine and CPU selection is::
+
+  -machine virt,accel=tcg,virtualization=on,secure=off,x-drtm=on -cpu max
+
+Exactly one ``tpm-tis-device`` frontend backed by a TPM 2.0 implementation is
+required.  The frontend and backend must provide the dynamic PCR and locality
+operations used by the selected profile.  Machine initialization validates
+the frontend type, TPM version, and DRTM locality/hash interface; a failure in
+those fixed prerequisites prevents publication.  It enables locality
+mediation after device reset without issuing TPM commands.  Active PCR-bank
+discovery is deferred until guest firmware has performed ``TPM2_Startup`` and
+then invokes a metadata-dependent DRTM call.  A discovery failure returns
+``TPM_ERROR`` and may be retried rather than terminating QEMU.  An SMMU is not
+required because DMA protection is modeled as described below.  CPU hotplug
+is unsupported.  Migration and snapshots are also unsupported because DRTM
+and TPM locality state are not migratable.
+
+Firmware interface
+^^^^^^^^^^^^^^^^^^
+
+``DRTM_VERSION`` reports version 1.4 after the immutable interface and its
+locality-mediation prerequisites are published.  TPM metadata readiness is
+not a publication condition: function-availability queries remain stable,
+while a metadata-dependent feature, TCB-hash, or launch call returns
+``TPM_ERROR`` if PCR-bank discovery is not yet possible.  The mandatory
+interface comprises ``DRTM_VERSION``,
+``DRTM_FEATURES``, ``DRTM_DYNAMIC_LAUNCH``, ``DRTM_UNPROTECT_MEMORY``,
+``DRTM_CLOSE_LOCALITY``, ``DRTM_GET_ERROR``, ``DRTM_SET_ERROR``, and
+``DRTM_ENABLE_SECURE_INTERRUPTS``.
+
+These functions use the SMC64 function IDs, parameter layouts, validation
+rules, return values, and state transitions defined by DEN0113 version 1.4B.
+Optional functions are reported by ``DRTM_FEATURES`` only when they are
+implemented.  In particular:
+
+* The DMA protection feature advertises only complete DMA protection.  Region
+  protection is not advertised, its launch feature bit and protection table
+  are rejected, and the maximum protected-region count is zero.  The
+  complete-protection descriptor is a modeled protocol result: QEMU does not
+  stop devices, revoke DMA mappings, or prevent a virtual device from writing
+  guest RAM while the service is in its protected state.
+* QEMU calculates firmware digests in software and sends them through the
+  configured TPM path.  The D-CRTM stage uses ``HASH_START``, ``HASH_DATA``,
+  and ``HASH_END`` to reset the dynamic PCRs and extend the DCE digest into
+  PCR 17.  The following D-CRTM and DCE measurements use
+  ``TPM2_PCR_Extend``.  QEMU constructs the required crypto-agile event log
+  from the same measurement manifest.  This profile never uses
+  ``TPM2_PCR_Event`` and leaves the TPM-based-hashing feature bit clear.
+* QEMU and the TPM path implement the specified guest-visible locality
+  acquisition, relinquish, close, reset, and relaunch behavior.  This is
+  software-contract enforcement, not hardware isolation of the host TPM
+  interface.
+* Secure-interrupt disable and enable operations update the DRTM service
+  state.  They do not quiesce the virtual GIC or affect host interrupts.
+
+The optional TCB-hash functions are advertised only as a pair.  DLME image
+authentication is not advertised unless an authentication mechanism is
+configured.
+
+Dynamic launch
+^^^^^^^^^^^^^^
+
+On ``DRTM_DYNAMIC_LAUNCH``, QEMU first checks that the service and TPM path
+are ready, that the caller is the boot PE in AArch64 state, that all secondary
+PEs are off, and that no TPM locality is active.  An error while checking TPM
+localities returns ``TPM_ERROR``; an active locality returns ``DENIED``.  These
+checks run before launch-parameter decoding in QEMU's phase-1 implementation,
+consistent with the requirements in DEN0113 Table 24.
+
+QEMU then decodes the little-endian launch parameter block without mapping it
+to a host structure.  Before changing platform state it validates:
+
+* the structure revision and reserved fields;
+* requested launch features, including rejection of region protection and its
+  memory-protection table;
+* alignment and checked address-plus-size arithmetic;
+* containment and permitted overlap of the DCE, DLME image, DLME data, and
+  entry point; and
+* that every referenced span is ordinary accessible guest RAM.
+
+A later preflight verifies workflow state and consistency among the
+snapshotted launch inputs, and constructs the sealed launch plan.  A
+validation or precondition failure uses the corresponding DEN0113 status
+classification.  Where DEN0113 does not define a total precedence between
+checks within a stage, QEMU uses implementation order.  A launch rejected by
+any of these checks does not change guest memory, CPU entry state, PCRs,
+localities, or DRTM launch state.
+
+For a successful launch, QEMU copies the bytes used by the software
+measurements while the calling vCPU is stopped, builds the DRTM launch data
+and crypto-agile event log, performs the dynamic PCR and locality operations,
+updates the modeled DRTM state, and transfers control to the DLME with the
+architectural entry state required by DEN0113.  Success does not return to
+the caller.
+
+The DLME data uses the version 1.4B layouts, bounded offsets and sizes, the
+configured virtual platform's address map, and the selected PCR usage schema.
+Measurements and event records follow the version 1.4B definitions and
+ordering; they are not reordered or otherwise changed to match a particular
+test program.
+
+The address-map snapshot accepts at most 4096 descriptors.  That capacity,
+the active PCR banks, and the 64-entry caller TCB-hash capacity are included
+when calculating the minimum DLME-data size reported by ``DRTM_FEATURES``.
+QEMU serializes only hashes submitted through ``DRTM_SET_TCB_HASH``.  A
+non-empty set must be locked before launch; when firmware submits no hashes,
+QEMU permits the TCB-hash region to be absent and reports zero for both the
+TCB-hash and ACPI-table region sizes.
+
+Permitting an empty TCB set is a workflow-emulation deviation.  QEMU does not
+discover or hash installed ACPI tables during launch, so the model does not
+meet DEN0113 v1.4B R314070, R45420, or R45440 without cooperating firmware.
+Firmware must hash the finalized TCB-critical tables, submit those hashes with
+``DRTM_SET_TCB_HASH``, and call ``DRTM_LOCK_TCB_HASHES`` before End of DXE.
+
+``DRTM_UNPROTECT_MEMORY`` and the error functions follow the specified
+guest-visible state machine; unprotect changes the modeled DMA-protection
+state only.  ``DRTM_CLOSE_LOCALITY`` performs the specified close operation
+through the configured TPM path as well as updating DRTM service state.
+
+Security boundary
+^^^^^^^^^^^^^^^^^
+
+The word "protected" in DRTM service state and launch data does not describe
+an enforced QEMU memory-access policy.  A DMA-capable virtual device, a device
+backend, or another QEMU thread might modify a measured region after it has
+been hashed.  QEMU also does not establish hardware access control for TPM
+localities or a hardware-protected D-CRTM or DCE execution environment.
+
+Consequently, measurements produced by this model are deterministic workflow
+artifacts, not trustworthy attestations.  The QEMU process, host kernel and
+hypervisor, TPM and device backends, and anyone able to modify those
+components or QEMU's memory can alter the launch environment.  This model
+provides no confidentiality, integrity, or availability security boundary.
+
+The checked-in Arm System Architecture Compliance Suite ``Drtm.efi`` is an
+older v0.7 application which expects DRTM version 1.1.  It is retained as an
+integration diagnostic, not as the definition of this interface.  Where its
+expectations differ, DEN0113 version 1.4B is authoritative; QEMU does not
+change version, measurement order, or PCR semantics merely to satisfy that
+binary.  Passing it checks only observable behavior shared by the two
+profiles, and does not establish DRTM conformance or any DMA, TPM, or
+trust-boundary property.
 
 SBSA Generic Watchdog
 """""""""""""""""""""
