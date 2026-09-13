@@ -1,0 +1,57 @@
+From 7e6eda29a592481342394b21edde6a012404818c Mon Sep 17 00:00:00 2001
+From: Jason Gunthorpe <jgg@nvidia.com>
+Date: Sun, 13 Sep 2026 11:10:14 -0300
+Subject: [PATCH 8/9] JUNK: drtm: Relinquish locality 2 after launch
+
+The synthetic ACS DLME returns to its pre-launch context, so the test
+suite can launch another DRTM from inside the already launched DRTM. A
+real DLME would relinquish locality 2 after completing its measurements.
+
+Hard-wire the qemu's TIS locality 2 ACCESS register and relinquish it
+after successful simulated launches. This is deliberately a test-only hack
+matching the existing locality 0 boot workaround.
+
+Signed-off-by: Jason Gunthorpe <jgg@nvidia.com>
+---
+ val/src/acs_interface.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/val/src/acs_interface.c b/val/src/acs_interface.c
+index 760afd1859571d..097648156afe93 100644
+--- a/val/src/acs_interface.c
++++ b/val/src/acs_interface.c
+@@ -25,6 +25,9 @@
+ #include "acs_std_smc.h"
+ #include "acs_memory.h"
+ 
++#define QEMU_TPM_ACCESS_2            0x0C002000
++#define TPM_ACCESS_ACTIVE_LOCALITY   (1U << 5)
++
+ /* g_drtm_features structure is a global structure */
+ DRTM_ACS_FEATURES g_drtm_features;
+ 
+@@ -227,7 +230,20 @@ int64_t val_drtm_features(uint64_t fid, uint64_t *feat1, uint64_t *feat2)
+  */
+ int64_t val_drtm_dynamic_launch(DRTM_PARAMETERS *drtm_params)
+ {
+-    return val_drtm_simulate_dl(drtm_params);
++    int64_t status;
++
++    status = val_drtm_simulate_dl(drtm_params);
++    if (status == DRTM_ACS_SUCCESS) {
++        /*
++         * QEMU-only test hack: the synthetic ACS DLME returns to the DCE
++         * context, unlike a real DLME.  Relinquish the locality that QEMU
++         * activated so the suite can launch a DRTM from inside the already
++         * launched DRTM and exercise repeated-launch behavior.
++         */
++        val_mmio_write8(QEMU_TPM_ACCESS_2, TPM_ACCESS_ACTIVE_LOCALITY);
++    }
++
++    return status;
+ }
+ 
+ /**
+-- 
+2.43.0
+

@@ -1,0 +1,39 @@
+From df10b50d7c01f153f2fa5092338372bd88cb90ef Mon Sep 17 00:00:00 2001
+From: Jason Gunthorpe <jgg@nvidia.com>
+Date: Sat, 12 Sep 2026 19:40:44 -0300
+Subject: [PATCH 1/9] drtm: Permit all version from 1.1 to 1.4
+
+interface001 rejected any DRTM_VERSION minor value other than 1, so a
+firmware reporting minor version 4 failed this trivial check.
+
+DEN0113 1.4B section 3.2.1 states that for this revision of the DRTM
+interface the major version is 1 and the minor version is 4, and that a
+higher minor value with the same major value must stay compatible with
+earlier revisions ("if the minor revision value of revision B is greater
+than the minor revision value of revision A, then every function in
+revision A must work in a compatible way with revision B"). Accept any
+minor version from 1 to 4 inclusive instead of requiring exactly 1.
+
+Signed-off-by: Jason Gunthorpe <jgg@nvidia.com>
+---
+ test_pool/drtm/interface001.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test_pool/drtm/interface001.c b/test_pool/drtm/interface001.c
+index 499455a2f44eed..ab795ab8e90f26 100644
+--- a/test_pool/drtm/interface001.c
++++ b/test_pool/drtm/interface001.c
+@@ -44,7 +44,7 @@ payload(uint32_t num_pe)
+   }
+ 
+   minor = DRTM_VERSION_GET_MINOR(g_drtm_features.version.value);
+-  if (minor != 1) {
++  if (minor < 1 || minor > 4) {
+     val_print(INFO, "\n       Minor Version not as expected, Current version =%d", minor);
+     val_set_status(index, RESULT_FAIL(3));
+     return;
+
+base-commit: f2c6c35450e7a9129cebe66f42de0136bf85e591
+-- 
+2.43.0
+

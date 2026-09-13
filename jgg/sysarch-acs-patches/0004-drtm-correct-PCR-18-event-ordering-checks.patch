@@ -1,0 +1,185 @@
+From 388de31e29175f940a83910d32b5444ba39bed2c Mon Sep 17 00:00:00 2001
+From: Jason Gunthorpe <jgg@nvidia.com>
+Date: Sun, 13 Sep 2026 15:01:06 -0300
+Subject: [PATCH 4/9] drtm: correct PCR 18 event ordering checks
+
+DEN0113 1.4B Table 40 (Default PCR[18] schema details) and Table 42
+(DLME Authorities PCR[18] schema details) both place the
+EVTYPE_ARM_DEBUG_CONFIG and EVTYPE_ARM_NONSECURE_CONFIG measurements
+(orders 3 and 4) before the DLME-related events EVTYPE_ARM_DLME /
+EVTYPE_ARM_DLME_PUBKEY (orders 5 onward). Tests 113 and 115 expected
+the DLME-related events first, causing a conforming default-schema
+event log to fail as out of order.
+
+Reorder the default and DLME-authorities schema assertions to match their
+respective tables while preserving the PCR 17 ordering, optional event
+rules, separator checks, and exact membership checks.  Reject event-array
+overflow explicitly so excess events cannot be silently discarded and
+evade the no-extra-events validation.
+
+Signed-off-by: Jason Gunthorpe <jgg@nvidia.com>
+---
+ test_pool/drtm/dl013.c | 44 +++++++++++++++++++++++--------------
+ test_pool/drtm/dl015.c | 50 +++++++++++++++++++++++++-----------------
+ 2 files changed, 57 insertions(+), 37 deletions(-)
+
+diff --git a/test_pool/drtm/dl013.c b/test_pool/drtm/dl013.c
+index cd4d87d18b27b8..204946185f5008 100644
+--- a/test_pool/drtm/dl013.c
++++ b/test_pool/drtm/dl013.c
+@@ -113,9 +113,19 @@ payload(uint32_t num_pe)
+       goto free_dlme_region;
+     }
+ 
+-    if (entry.event->pcr_index == 17 && pcr17_count < 256) {
++    if (entry.event->pcr_index == 17) {
++      if (pcr17_count >= 256) {
++        val_print(ERROR, "\n       Too many PCR[17] events");
++        val_set_status(index, RESULT_FAIL(7));
++        goto free_dlme_region;
++      }
+       pcr17_events[pcr17_count++] = entry.event->event_type;
+-    } else if (entry.event->pcr_index == 18 && pcr18_count < 256) {
++    } else if (entry.event->pcr_index == 18) {
++      if (pcr18_count >= 256) {
++        val_print(ERROR, "\n       Too many PCR[18] events");
++        val_set_status(index, RESULT_FAIL(7));
++        goto free_dlme_region;
++      }
+       pcr18_events[pcr18_count++] = entry.event->event_type;
+     }
+   }
+@@ -187,24 +197,10 @@ payload(uint32_t num_pe)
+     goto free_dlme_region;
+   }
+   event_idx++;
+-  /* DLME required */
+-  if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DLME) {
+-    val_print(ERROR, "\n       PCR[18] DLME not found or out of order");
+-    val_set_status(index, RESULT_FAIL(15));
+-    goto free_dlme_region;
+-  }
+-  event_idx++;
+-  /* DLME_ENTRY_POINT required */
+-  if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DLME_ENTRY_POINT) {
+-    val_print(ERROR, "\n       PCR[18] DLME_ENTRY_POINT not found or out of order");
+-    val_set_status(index, RESULT_FAIL(16));
+-    goto free_dlme_region;
+-  }
+-  event_idx++;
+   /* DEBUG_CONFIG required */
+   if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DEBUG_CONFIG) {
+     val_print(ERROR, "\n       PCR[18] DEBUG_CONFIG not found or out of order");
+-    val_set_status(index, RESULT_FAIL(17));
++    val_set_status(index, RESULT_FAIL(15));
+     goto free_dlme_region;
+   }
+   event_idx++;
+@@ -212,6 +208,20 @@ payload(uint32_t num_pe)
+   if (event_idx >= pcr18_count ||
+       pcr18_events[event_idx] != DRTM_EVTYPE_ARM_NONSECURE_CONFIG) {
+     val_print(ERROR, "\n       PCR[18] NONSECURE_CONFIG not found or out of order");
++    val_set_status(index, RESULT_FAIL(16));
++    goto free_dlme_region;
++  }
++  event_idx++;
++  /* DLME required */
++  if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DLME) {
++    val_print(ERROR, "\n       PCR[18] DLME not found or out of order");
++    val_set_status(index, RESULT_FAIL(17));
++    goto free_dlme_region;
++  }
++  event_idx++;
++  /* DLME_ENTRY_POINT required */
++  if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DLME_ENTRY_POINT) {
++    val_print(ERROR, "\n       PCR[18] DLME_ENTRY_POINT not found or out of order");
+     val_set_status(index, RESULT_FAIL(18));
+     goto free_dlme_region;
+   }
+diff --git a/test_pool/drtm/dl015.c b/test_pool/drtm/dl015.c
+index 97012feed617b6..b1cbb545659c3e 100644
+--- a/test_pool/drtm/dl015.c
++++ b/test_pool/drtm/dl015.c
+@@ -128,9 +128,19 @@ payload(uint32_t num_pe)
+       goto free_dlme_region;
+     }
+ 
+-    if (entry.event->pcr_index == 17 && pcr17_count < 256) {
++    if (entry.event->pcr_index == 17) {
++      if (pcr17_count >= 256) {
++        val_print(ERROR, "\n       Too many PCR[17] events");
++        val_set_status(index, RESULT_FAIL(7));
++        goto free_dlme_region;
++      }
+       pcr17_events[pcr17_count++] = entry.event->event_type;
+-    } else if (entry.event->pcr_index == 18 && pcr18_count < 256) {
++    } else if (entry.event->pcr_index == 18) {
++      if (pcr18_count >= 256) {
++        val_print(ERROR, "\n       Too many PCR[18] events");
++        val_set_status(index, RESULT_FAIL(7));
++        goto free_dlme_region;
++      }
+       pcr18_events[pcr18_count++] = entry.event->event_type;
+     }
+   }
+@@ -208,10 +218,26 @@ payload(uint32_t num_pe)
+   }
+   event_idx++;
+ 
++  /* DEBUG_CONFIG required */
++  if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DEBUG_CONFIG) {
++    val_print(ERROR, "\n       PCR[18] DEBUG_CONFIG not found or out of order");
++    val_set_status(index, RESULT_FAIL(15));
++    goto free_dlme_region;
++  }
++  event_idx++;
++  /* NONSECURE_CONFIG required */
++  if (event_idx >= pcr18_count ||
++      pcr18_events[event_idx] != DRTM_EVTYPE_ARM_NONSECURE_CONFIG) {
++    val_print(ERROR, "\n       PCR[18] NONSECURE_CONFIG not found or out of order");
++    val_set_status(index, RESULT_FAIL(16));
++    goto free_dlme_region;
++  }
++  event_idx++;
++
+   /* DLME_PUBKEY required if auth succeeds */
+   if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DLME_PUBKEY) {
+     val_print(ERROR, "\n       PCR[18] DLME_PUBKEY not found or out of order");
+-    val_set_status(index, RESULT_FAIL(15));
++    val_set_status(index, RESULT_FAIL(17));
+     goto free_dlme_region;
+   }
+   event_idx++;
+@@ -223,22 +249,6 @@ payload(uint32_t num_pe)
+   /* DLME_ENTRY_POINT required */
+   if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DLME_ENTRY_POINT) {
+     val_print(ERROR, "\n       PCR[18] DLME_ENTRY_POINT not found or out of order");
+-    val_set_status(index, RESULT_FAIL(16));
+-    goto free_dlme_region;
+-  }
+-  event_idx++;
+-
+-  /* DEBUG_CONFIG required */
+-  if (event_idx >= pcr18_count || pcr18_events[event_idx] != DRTM_EVTYPE_ARM_DEBUG_CONFIG) {
+-    val_print(ERROR, "\n       PCR[18] DEBUG_CONFIG not found or out of order");
+-    val_set_status(index, RESULT_FAIL(17));
+-    goto free_dlme_region;
+-  }
+-  event_idx++;
+-  /* NONSECURE_CONFIG required */
+-  if (event_idx >= pcr18_count ||
+-      pcr18_events[event_idx] != DRTM_EVTYPE_ARM_NONSECURE_CONFIG) {
+-    val_print(ERROR, "\n       PCR[18] NONSECURE_CONFIG not found or out of order");
+     val_set_status(index, RESULT_FAIL(18));
+     goto free_dlme_region;
+   }
+@@ -291,4 +301,4 @@ uint32_t dl015_entry(uint32_t num_pe)
+   val_report_status(0, ACS_END(TEST_NUM), NULL);
+ 
+   return status;
+-}
+\ No newline at end of file
++}
+-- 
+2.43.0
+

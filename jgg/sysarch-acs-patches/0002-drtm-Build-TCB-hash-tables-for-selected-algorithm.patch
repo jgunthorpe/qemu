@@ -1,0 +1,261 @@
+From 2a6ef3c86ca6265501b9634649ba6faf5ff157fc Mon Sep 17 00:00:00 2001
+From: Jason Gunthorpe <jgg@nvidia.com>
+Date: Sat, 12 Sep 2026 19:56:13 -0300
+Subject: [PATCH 2/9] drtm: Build TCB hash tables for selected algorithm
+
+interface013 and interface014 hard-coded a SHA-256-sized zero digest in
+every DRTM_SET_TCB_HASH table entry. Newer firmware rejects the call
+because its selected hash algorithm does not match.
+
+DEN0113 1.4B section 3.9.2 requires the caller to compute TCB hashes
+"using the hash algorithm in use by the DRTM implementation ... determined
+using the DRTM_FEATURES function," and Table 16
+(TCB_HASH_TABLE definition) ties the Hash algorithm field and each
+entry's digest length to that same algorithm (SHA-256: 32 bytes,
+SHA-384: 48 bytes, SHA-512: 64 bytes). Add
+val_drtm_init_tcb_hash_table() to size and tag each table entry
+from the algorithm reported by DRTM_FEATURES, and use it from both
+tests.
+
+Signed-off-by: Jason Gunthorpe <jgg@nvidia.com>
+---
+ test_pool/drtm/interface013.c | 46 ++++++++++++++--------------------
+ test_pool/drtm/interface014.c | 47 +++++++++++++++++------------------
+ val/include/acs_drtm.h        |  3 +++
+ val/src/acs_interface.c       | 41 ++++++++++++++++++++++++++++++
+ 4 files changed, 85 insertions(+), 52 deletions(-)
+
+diff --git a/test_pool/drtm/interface013.c b/test_pool/drtm/interface013.c
+index f899cd8716dae7..47182204165628 100644
+--- a/test_pool/drtm/interface013.c
++++ b/test_pool/drtm/interface013.c
+@@ -23,32 +23,6 @@
+ #define TEST_RULE  ""
+ #define TEST_DESC  "Check SET_TCB_HASHES max hashes case  "
+ 
+-#define SHA_256_DIGEST_SIZE_BYTES 32
+-
+-static
+-void
+-init_hashes(DRTM_TCB_HASH_TABLE *hash_table)
+-{
+-  int32_t hash;
+-  uint32_t num_hashes = VAL_EXTRACT_BITS(g_drtm_features.tcb_hash_features.value, 0, 7);
+-  uint8_t sha_256_digest_val[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+-                               };
+-  /* Fill the TCB Hash Table Header */
+-  hash_table->header.revision         = 1;
+-  hash_table->header.num_hashes       = num_hashes + 1;
+-  hash_table->header.reserved         = 0;
+-  /* NOTE: Taking SHA-256 as default hash algorithm */
+-  hash_table->header.hash_algo        = 0x000B; /* 0x000B: SHA-256: 32 bytes */
+-  /* Fill Dummy Hash values */
+-  for (hash = 0; hash < hash_table->header.num_hashes; hash++) {
+-    hash_table->hashes[hash].hash_id   = hash;
+-    val_memcpy(hash_table->hashes[hash].hash_val, sha_256_digest_val, SHA_256_DIGEST_SIZE_BYTES);
+-  }
+-}
+-
+ static
+ void
+ payload(uint32_t num_pe)
+@@ -56,6 +30,8 @@ payload(uint32_t num_pe)
+   uint32_t index = val_pe_get_index_mpid(val_pe_get_mpid());
+   int64_t  status = g_drtm_features.set_tcb_hash;
+   uint32_t num_hashes = VAL_EXTRACT_BITS(g_drtm_features.tcb_hash_features.value, 0, 7);
++  uint16_t hash_alg;
++  uint32_t digest_size;
+   DRTM_TCB_HASH_TABLE *drtm_hash_table;
+ 
+   /* Check if DRTM_SET_TCB_HASH is implemented */
+@@ -85,15 +61,29 @@ payload(uint32_t num_pe)
+   /* Max number of hashes can be recorded plus one */
+   num_hashes = num_hashes + 1;
+ 
++  hash_alg = (uint16_t)val_drtm_get_feature(DRTM_DRTM_FEATURES_FW_HASH_ALGOROTHM);
++  digest_size = val_drtm_get_digest_size(hash_alg);
++  if (!digest_size) {
++    val_print(ERROR, "\n       Unsupported firmware hash algorithm 0x%x", hash_alg);
++    val_set_status(index, RESULT_SKIP(3));
++    return;
++  }
++
+   drtm_hash_table = (DRTM_TCB_HASH_TABLE *)val_memory_alloc(sizeof(DRTM_TCB_HASH_TABLE_HDR) +
+-              ((sizeof(uint32_t) + (sizeof(uint8_t) * SHA_256_DIGEST_SIZE_BYTES)) * num_hashes));
++                                      ((sizeof(uint32_t) + digest_size) * num_hashes));
+   if (!drtm_hash_table) {
+     val_print(ERROR, "\n       Failed to allocate tcb hash table");
+     val_set_status(index, RESULT_FAIL(2));
+     return;
+   }
+ 
+-  init_hashes(drtm_hash_table);
++  status = val_drtm_init_tcb_hash_table(drtm_hash_table, 1,
++                                        (uint16_t)num_hashes, hash_alg);
++  if (status != ACS_STATUS_PASS) {
++    val_print(ERROR, "\n       Failed to initialize tcb hash table");
++    val_set_status(index, RESULT_FAIL(4));
++    goto free_tcb_hash;
++  }
+ 
+   status = val_drtm_set_tcb_hash((uint64_t)drtm_hash_table);
+   if (status != DRTM_ACS_OUT_OF_RESOURCE) {
+diff --git a/test_pool/drtm/interface014.c b/test_pool/drtm/interface014.c
+index 5cb49cd4f1bf5b..2e768526f580f0 100644
+--- a/test_pool/drtm/interface014.c
++++ b/test_pool/drtm/interface014.c
+@@ -24,27 +24,6 @@
+ #define TEST_DESC  "Check TCB Hashes invalid and denied   "
+ 
+ #define NUM_OF_HASHES              1
+-#define SHA_256_DIGEST_SIZE_BYTES 32
+-
+-static
+-void
+-init_hashes(DRTM_TCB_HASH_TABLE *hash_table, uint16_t version)
+-{
+-  uint8_t  sha_256_digest_val[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+-                               };
+-  /* Fill the TCB Hash Table Header */
+-  hash_table->header.revision         = version;
+-  hash_table->header.num_hashes       = NUM_OF_HASHES;
+-  hash_table->header.reserved         = 0;
+-  /* NOTE: Taking SHA-256 as default hash algorithm */
+-  hash_table->header.hash_algo        = 0x000B; /* 0x000B: SHA-256: 32 bytes */
+-  /* Fill Dummy Hash values */
+-  hash_table->hashes[0].hash_id   = 0;
+-  val_memcpy(hash_table->hashes[0].hash_val, sha_256_digest_val, SHA_256_DIGEST_SIZE_BYTES);
+-}
+ 
+ static
+ void
+@@ -53,6 +32,8 @@ payload(uint32_t num_pe)
+   uint32_t index = val_pe_get_index_mpid(val_pe_get_mpid());
+   int64_t  status = g_drtm_features.set_tcb_hash;
+   uint32_t num_hashes = VAL_EXTRACT_BITS(g_drtm_features.tcb_hash_features.value, 0, 7);
++  uint16_t hash_alg;
++  uint32_t digest_size;
+   DRTM_TCB_HASH_TABLE *drtm_hash_table;
+ 
+   /* Check if DRTM_SET_TCB_HASH is implemented */
+@@ -79,8 +60,16 @@ payload(uint32_t num_pe)
+     return;
+   }
+ 
++  hash_alg = (uint16_t)val_drtm_get_feature(DRTM_DRTM_FEATURES_FW_HASH_ALGOROTHM);
++  digest_size = val_drtm_get_digest_size(hash_alg);
++  if (!digest_size) {
++    val_print(ERROR, "\n       Unsupported firmware hash algorithm 0x%x", hash_alg);
++    val_set_status(index, RESULT_SKIP(3));
++    return;
++  }
++
+   drtm_hash_table = (DRTM_TCB_HASH_TABLE *)val_memory_alloc(sizeof(DRTM_TCB_HASH_TABLE_HDR) +
+-            ((sizeof(uint32_t) + (sizeof(uint8_t) * SHA_256_DIGEST_SIZE_BYTES)) * NUM_OF_HASHES));
++                                      ((sizeof(uint32_t) + digest_size) * NUM_OF_HASHES));
+   if (!drtm_hash_table) {
+     val_print(ERROR, "\n       Failed to allocate tcb hash table");
+     val_set_status(index, RESULT_FAIL(2));
+@@ -88,7 +77,12 @@ payload(uint32_t num_pe)
+   }
+ 
+   /* CASE 1: Filling Revision as 2 instead of 1 to get invalid parameters error */
+-  init_hashes(drtm_hash_table, 2);
++  status = val_drtm_init_tcb_hash_table(drtm_hash_table, 2, NUM_OF_HASHES, hash_alg);
++  if (status != ACS_STATUS_PASS) {
++    val_print(ERROR, "\n       Failed to initialize tcb hash table");
++    val_set_status(index, RESULT_FAIL(6));
++    goto free_tcb_hash;
++  }
+ 
+   status = val_drtm_set_tcb_hash((uint64_t)drtm_hash_table);
+   if (status != DRTM_ACS_INVALID_PARAMETERS) {
+@@ -105,7 +99,12 @@ payload(uint32_t num_pe)
+     goto free_tcb_hash;
+   }
+   /* Refill the hash table with revision as 1 */
+-  init_hashes(drtm_hash_table, 1);
++  status = val_drtm_init_tcb_hash_table(drtm_hash_table, 1, NUM_OF_HASHES, hash_alg);
++  if (status != ACS_STATUS_PASS) {
++    val_print(ERROR, "\n       Failed to initialize tcb hash table");
++    val_set_status(index, RESULT_FAIL(6));
++    goto free_tcb_hash;
++  }
+ 
+   status = val_drtm_set_tcb_hash((uint64_t)drtm_hash_table);
+   if (status != DRTM_ACS_DENIED) {
+diff --git a/val/include/acs_drtm.h b/val/include/acs_drtm.h
+index f9cbf791294fae..d3c25a0af7a612 100644
+--- a/val/include/acs_drtm.h
++++ b/val/include/acs_drtm.h
+@@ -402,6 +402,9 @@ int64_t val_drtm_init_drtm_params(DRTM_PARAMETERS *drtm_params);
+ uint64_t val_drtm_get_feature(uint64_t feature_type);
+ int val_drtm_is_range_valid(uint8_t *start, uint8_t *end, uint8_t *ptr, uint64_t len);
+ uint32_t val_drtm_get_digest_size(uint16_t hash_alg);
++uint32_t val_drtm_init_tcb_hash_table(DRTM_TCB_HASH_TABLE *hash_table,
++                                      uint16_t revision, uint16_t num_hashes,
++                                      uint16_t hash_alg);
+ uint32_t val_drtm_are_dce_and_drtm_images_distinct(void);
+ int32_t val_drtm_event_log_init(DRTM_PARAMETERS *drtm_params, DRTM_EVENT_LOG_STATE *event_log);
+ int32_t val_drtm_event_log_next(DRTM_EVENT_LOG_STATE *event_log, DRTM_EVENT_LOG_ENTRY *entry);
+diff --git a/val/src/acs_interface.c b/val/src/acs_interface.c
+index 5d524ad76882b4..1fc0150fe1249b 100644
+--- a/val/src/acs_interface.c
++++ b/val/src/acs_interface.c
+@@ -679,6 +679,47 @@ uint32_t val_drtm_get_digest_size(uint16_t hash_alg)
+     }
+ }
+ 
++/**
++  @brief  Initialize a TCB hash table using the digest size for a TPM algorithm
++  @param  hash_table  Allocated TCB hash table
++  @param  revision    TCB hash table revision
++  @param  num_hashes  Number of entries to initialize
++  @param  hash_alg    TPM algorithm identifier
++
++  @return ACS_STATUS_PASS on success, ACS_STATUS_ERR for an unsupported algorithm.
++ **/
++uint32_t val_drtm_init_tcb_hash_table(DRTM_TCB_HASH_TABLE *hash_table,
++                                      uint16_t revision, uint16_t num_hashes,
++                                      uint16_t hash_alg)
++{
++    uint8_t *hash_entry;
++    uint32_t digest_size;
++    uint32_t hash;
++    uint32_t byte;
++
++    digest_size = val_drtm_get_digest_size(hash_alg);
++    if (!digest_size)
++        return ACS_STATUS_ERR;
++
++    hash_table->header.revision = revision;
++    hash_table->header.num_hashes = num_hashes;
++    hash_table->header.hash_algo = hash_alg;
++    hash_table->header.reserved = 0;
++
++    hash_entry = (uint8_t *)hash_table + sizeof(DRTM_TCB_HASH_TABLE_HDR);
++    for (hash = 0; hash < num_hashes; hash++) {
++        DRTM_TCB_HASHES *tcb_hash = (DRTM_TCB_HASHES *)hash_entry;
++
++        tcb_hash->hash_id = hash;
++        for (byte = 0; byte < digest_size; byte++)
++            tcb_hash->hash_val[byte] = 0;
++
++        hash_entry += sizeof(uint32_t) + digest_size;
++    }
++
++    return ACS_STATUS_PASS;
++}
++
+ /**
+   @brief Determine if DCE and DRTM images are distinct
+ 
+-- 
+2.43.0
+

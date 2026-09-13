@@ -1,0 +1,42 @@
+From 103d82d0cdf1018d6984d9c6547e30118518453c Mon Sep 17 00:00:00 2001
+From: Jason Gunthorpe <jgg@nvidia.com>
+Date: Sat, 12 Sep 2026 20:29:00 -0300
+Subject: [PATCH 7/9] JUNK: drtm: Relinquish TPM locality at startup
+
+qemu's EDK2 is leaving the locality active, which prevents launch. This
+seems to be an EDK2 bug, as it is not reasonable for the OS launch to have
+to directly operate the TPM with a real driver and relinquish the locality
+EDK2 established just to boot.
+
+Signed-off-by: Jason Gunthorpe <jgg@nvidia.com>
+---
+ apps/uefi/drtm_main.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/apps/uefi/drtm_main.c b/apps/uefi/drtm_main.c
+index bef85187be0a81..a52bb3fbb5a1ed 100644
+--- a/apps/uefi/drtm_main.c
++++ b/apps/uefi/drtm_main.c
+@@ -28,6 +28,9 @@
+ 
+ #include "acs.h"
+ 
++#define QEMU_TPM_ACCESS_0            0x0C000000
++#define TPM_ACCESS_ACTIVE_LOCALITY   (1U << 5)
++
+ extern VOID* g_acs_log_file_handle;
+ 
+ UINT32  g_acs_tests_pass;
+@@ -106,6 +109,9 @@ command_init ()
+   acs_reset_execution_policy();
+   policy = acs_get_execution_policy_mut();
+ 
++  /* EDK2 leaves QEMU's TIS locality 0 active after boot. */
++  val_mmio_write8(QEMU_TPM_ACCESS_0, TPM_ACCESS_ACTIVE_LOCALITY);
++
+   //
+   // Process Command Line arguments
+   //
+-- 
+2.43.0
+

@@ -1,0 +1,240 @@
+From 7744d3c9f07213bc91b2280f29daf4780e52791f Mon Sep 17 00:00:00 2001
+From: Jason Gunthorpe <jgg@nvidia.com>
+Date: Sun, 13 Sep 2026 15:07:53 -0300
+Subject: [PATCH 5/9] drtm: synchronize secondary PE launch test
+
+Test 107 called val_execute_on_pe() and immediately issued
+DRTM_DYNAMIC_LAUNCH. PSCI CPU_ON returning only confirms that startup was
+accepted; it does not prove that the secondary payload is executing. The
+secondary also abandoned its wait after an unrelated timeout, so the test
+could issue the SMC after the PE had already powered off and incorrectly
+receive success instead of SECONDARY_PE_NOT_OFF.
+
+DEN0113 1.4B section 4.7 (Table 24, R44020) requires that "the D-CRTM must
+verify that the DCE preamble used PSCI CPU_OFF to turn off all PEs except
+the boot PE and, if not, return the return code SECONDARY_PE_NOT_OFF to
+the caller of DRTM_DYNAMIC_LAUNCH." Exercising that requirement means the
+secondary PE must genuinely still be running, powered on, at the moment
+DRTM_DYNAMIC_LAUNCH is issued.
+
+Add a cache-maintained ready/done handshake. The secondary publishes
+readiness and remains active until the primary publishes completion.  The
+primary waits for readiness before issuing the launch, routes every
+post-dispatch path through secondary release, and waits for both payload
+completion and PSCI AFFINITY_INFO to report the PE off before resetting
+shared state. Refuse to reuse the handshake if power-off cannot be
+confirmed, and preserve the original launch or unprotect failure if
+cleanup also times out.
+
+This establishes the R44020 premise directly and makes repeated runs
+against a conformant implementation consistently observe an active
+secondary PE at launch time.
+
+Signed-off-by: Jason Gunthorpe <jgg@nvidia.com>
+---
+ test_pool/drtm/dl007.c | 140 +++++++++++++++++++++++++++++++++++------
+ 1 file changed, 121 insertions(+), 19 deletions(-)
+
+diff --git a/test_pool/drtm/dl007.c b/test_pool/drtm/dl007.c
+index e1743e074c6e96..00908b41f0ab27 100644
+--- a/test_pool/drtm/dl007.c
++++ b/test_pool/drtm/dl007.c
+@@ -17,21 +17,63 @@
+ 
+ #include "acs_val.h"
+ #include "acs_memory.h"
++#include "acs_std_smc.h"
+ #include "val_interface.h"
+ 
+ #define TEST_NUM   (ACS_DRTM_DL_TEST_NUM_BASE  +  7)
+ #define TEST_RULE  ""
+ #define TEST_DESC  "Check Dynamic Launch Sec PE on        "
+ 
+-/* This will be used to inform secondary PE that dynamic launch command is issued */
+-volatile uint32_t dl_done = 0;
++/* Handshake state shared by the primary and the selected secondary PE. */
++static volatile uint32_t secondary_ready;
++static volatile uint32_t dl_done;
++static uint32_t secondary_cleanup_failed;
++
++extern int32_t gPsciConduit;
++
++static
++void
++publish_flag(volatile uint32_t *flag, uint32_t value)
++{
++  *flag = value;
++  val_data_cache_ops_by_va((addr_t)flag, CLEAN_AND_INVALIDATE);
++}
++
++static
++uint32_t
++is_pe_off(uint32_t pe_index)
++{
++  ARM_SMC_ARGS args = {0};
++
++  args.Arg0 = ARM_SMC_ID_PSCI_AFFINITY_INFO_AARCH64;
++  args.Arg1 = val_pe_get_mpid_index(pe_index);
++  args.Arg2 = ARM_SMC_ID_PSCI_AFFINITY_LEVEL_0;
++  pal_pe_call_smc(&args, gPsciConduit);
++
++  return args.Arg0 == ARM_SMC_ID_PSCI_AFFINITY_INFO_OFF;
++}
++
++static
++void
++set_cleanup_failure(uint32_t pe_index, uint32_t checkpoint)
++{
++  if (GET_STATE(val_get_status(pe_index)) == TEST_PASS)
++    val_set_status(pe_index, RESULT_FAIL(checkpoint));
++}
+ 
+ /* Payload to run on secondary PE */
+ void payload_secondary(void)
+ {
+-  /* Wait until DL is called on Primary PE */
+-  uint32_t timeout = TIMEOUT_MEDIUM;
+-  while (timeout-- && (dl_done == 0));
++  uint32_t index = val_pe_get_index_mpid(val_pe_get_mpid());
++
++  publish_flag(&secondary_ready, 1);
++
++  /* Stay active until the primary has issued, or abandoned, the launch. */
++  do {
++    val_data_cache_ops_by_va((addr_t)&dl_done, INVALIDATE);
++  } while (dl_done == 0);
++
++  val_set_status(index, RESULT_PASS);
+ }
+ 
+ static
+@@ -44,13 +86,26 @@ payload(uint32_t num_pe)
+    * */
+   uint32_t index = val_pe_get_index_mpid(val_pe_get_mpid());
+   int64_t  status;
++  int64_t  launch_status;
+   uint32_t sec_pe_index;
+-  uint32_t timeout = TIMEOUT_MEDIUM;
++  uint32_t secondary_status;
++  uint32_t secondary_off;
++  uint32_t timeout;
++  uint32_t secondary_dispatched = 0;
+ 
+   DRTM_PARAMETERS *drtm_params;
+   uint64_t drtm_params_size = DRTM_SIZE_4K;
+   uint32_t num_of_pe;
+ 
++  if (secondary_cleanup_failed) {
++    val_print(ERROR, "\n       Previous secondary PE cleanup did not complete");
++    val_set_status(index, RESULT_FAIL(7));
++    return;
++  }
++
++  publish_flag(&secondary_ready, 0);
++  publish_flag(&dl_done, 0);
++
+   num_of_pe = val_pe_get_num();
+   if (num_of_pe < 2) {
+     /* Skip the test as there is no secondary PE */
+@@ -83,38 +138,85 @@ payload(uint32_t num_pe)
+   }
+ 
+   /* Switch on secondary PE */
++  val_set_status(sec_pe_index, RESULT_PENDING(TEST_NUM));
+   val_execute_on_pe(sec_pe_index, payload_secondary, 0);
++  secondary_dispatched = 1;
++
++  /* CPU_ON returning does not mean the secondary payload has started. */
++  timeout = TIMEOUT_LARGE;
++  do {
++    val_data_cache_ops_by_va((addr_t)&secondary_ready, INVALIDATE);
++    if (secondary_ready != 0)
++      break;
++  } while (--timeout);
++
++  if (secondary_ready == 0) {
++    val_print(ERROR, "\n       Secondary PE %d ready time-out", sec_pe_index);
++    val_set_status(index, RESULT_FAIL(3));
++    goto release_secondary;
++  }
++
++  val_print(TRACE, "\n       Secondary PE %d ready before dynamic launch", sec_pe_index);
+ 
+   /* Invoke DRTM Dynamic Launch, This will return only in case of error */
+-  status = val_drtm_dynamic_launch(drtm_params);
++  launch_status = val_drtm_dynamic_launch(drtm_params);
+ 
+-  dl_done = 1;
+   /* This should return Fail as secondary pe is on */
+-  if (status != DRTM_ACS_SECONDARY_PE_NOT_OFF) {
++  if (launch_status != DRTM_ACS_SECONDARY_PE_NOT_OFF) {
+     val_print(ERROR, "\n       DRTM Dynamic Launch failed, Expected = %d",
+                             DRTM_ACS_SECONDARY_PE_NOT_OFF);
+-    val_print(ERROR, " Found = %d", status);
+-    val_set_status(index, RESULT_FAIL(3));
+-    if (status == DRTM_ACS_SUCCESS) {
++    val_print(ERROR, " Found = %d", launch_status);
++    val_set_status(index, RESULT_FAIL(4));
++    if (launch_status == DRTM_ACS_SUCCESS) {
+       status = val_drtm_unprotect_memory();
+       if (status < DRTM_ACS_SUCCESS) {
+         val_print(ERROR, "\n       DRTM Unprotect Memory failed err=%d", status);
+-        val_set_status(index, RESULT_FAIL(4));
++        val_set_status(index, RESULT_FAIL(5));
+       }
+     }
+-    goto free_dlme_region;
++    goto release_secondary;
+   }
+ 
+   val_set_status(index, RESULT_PASS);
+ 
+-free_dlme_region:
+-  val_memory_free_aligned((void *)drtm_params->dlme_region_address);
++release_secondary:
++  if (secondary_dispatched) {
++    publish_flag(&dl_done, 1);
++
++    timeout = TIMEOUT_LARGE;
++    do {
++      secondary_status = val_get_status(sec_pe_index);
++      if (!IS_RESULT_PENDING(secondary_status))
++        break;
++    } while (--timeout);
++
++    if (IS_RESULT_PENDING(secondary_status)) {
++      val_print(ERROR, "\n       Secondary PE %d payload exit time-out", sec_pe_index);
++      set_cleanup_failure(index, 6);
++    }
++
++    timeout = TIMEOUT_LARGE;
++    do {
++      secondary_off = is_pe_off(sec_pe_index);
++      if (secondary_off)
++        break;
++    } while (--timeout);
++
++    if (!secondary_off) {
++      val_print(ERROR, "\n       Secondary PE %d power-off time-out", sec_pe_index);
++      set_cleanup_failure(index, 7);
++      secondary_cleanup_failed = 1;
++    } else {
++      publish_flag(&secondary_ready, 0);
++      publish_flag(&dl_done, 0);
++    }
++  }
++
++  if (drtm_params->dlme_region_address)
++    val_memory_free_aligned((void *)drtm_params->dlme_region_address);
+ free_drtm_params:
+   val_memory_free_aligned((void *)drtm_params);
+ 
+-  /* Wait for some time to make sure PE switched off */
+-  while (timeout--);
+-
+   return;
+ }
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,282 @@
+I am interested in a qemu emulation of ARM64 DRTM. What already exists that could demonstrate this?
+
+As of September 2026, there is no ready-to-run upstream QEMU demonstration of Arm64 DRTM. The closest working implementation is Arm’s TF‑A DRTM proof of concept on the Arm Fixed Virtual Platform (FVP). Fortunately, most of the ingredients needed to move that demonstration to QEMU already exist.
+
+The important architectural point is that Arm DRTM is not a CPU instruction requiring new QEMU instruction emulation. Dynamic launch is an SMC—DRTM_DYNAMIC_LAUNCH—handled by trusted firmware. Therefore, the main missing piece is a TF‑A platform port, not a new QEMU CPU feature.
+
+What exists
+Component	Existing implementation	Current usefulness
+D-CRTM and DCE	TF‑A BL31 DRTM service	Substantial reference implementation
+DCE preamble and test DLME	Arm UEFI test application	Demonstrates the launch and hand-off
+Conformance tests	Arm System Architecture ACS Drtm.efi	Tests discovery, launch parameters, event log and hand-off
+EL3/TrustZone emulation	QEMU virt,secure=on plus TF‑A PLAT=qemu	Suitable execution environment
+DMA protection	QEMU machine-wide SMMUv3	Hardware model exists, but needs TF‑A DRTM glue
+TPM	QEMU tpm-tis-device backed by swtpm	Five-locality TIS model exists
+Arm64 Linux DLME support	None upstream	Significant missing layer
+TrenchBoot Arm support	None yet	Design work only
+1. TF-A DRTM proof of concept
+
+TF‑A contains a firmware-backed implementation in which:
+
+BL31 contains the D-CRTM and DCE.
+A UEFI application acts as both DCE preamble and test DLME.
+The UEFI application constructs the DRTM parameter block and calls DRTM_DYNAMIC_LAUNCH.
+BL31 checks the machine state, measures the launch material, produces the DLME data and transfers control to the DLME.
+
+The implementation is compiled with DRTM_SUPPORT=1. Arm’s documentation describes it as experimental, and the only upstream platform implementation is currently plat/arm/board/fvp. TF‑A DRTM design, FVP DRTM platform integration.
+
+Older TF‑A documentation includes complete FVP build/run instructions and references downloadable EDK2 and test-disk images. The expected successful transcript includes calls to DRTM_VERSION, DRTM_FEATURES, dynamic launch and memory unprotection. TF‑A 2.10 DRTM PoC instructions.
+
+This is presently the best proof that the Arm DRTM execution model can be demonstrated under emulation—but it uses FVP, not QEMU.
+
+2. Arm DRTM Architecture Compliance Suite
+
+Arm now has a DRTM test suite in ARM-software/sysarch-acs. It builds an AArch64 UEFI application named Drtm.efi and explicitly supports execution in an emulation environment. It tests the DRTM SMC interface and includes tests that actually perform dynamic launch and inspect the resulting event log and DLME data. The code is still labelled alpha. DRTM ACS documentation.
+
+For a new demonstration, I would use this instead of relying exclusively on the old TF‑A test-disk application. It gives you visible test results and a path toward specification compliance.
+
+3. QEMU already supplies most of the virtual hardware
+
+QEMU’s virt platform can provide:
+
+TrustZone/EL3 with secure=on
+EL2 with virtualization=on
+multiple CPUs
+a machine-wide SMMUv3 using iommu=smmuv3
+secure RAM and secure flash
+a TPM 2.0 TIS sysbus device backed by swtpm
+
+QEMU explicitly documents tpm-tis-device as usable with the Arm virt machine. Its TIS interface exposes the five locality pages, which is a much better match for DRTM than QEMU’s one-locality CRB device. QEMU Arm virt, QEMU TPM device.
+
+TF‑A also already has a normal QEMU platform port capable of booting BL1, BL2, BL31 and EDK2 on virt,secure=on. TF‑A QEMU platform documentation.
+
+What a QEMU demonstration would require
+
+The shortest route would be:
+
+Port the FVP DRTM platform callbacks into plat/qemu.
+Boot TF‑A and EDK2 under QEMU TCG with EL3 enabled.
+Run either the old DRTM UEFI application or the newer ACS Drtm.efi.
+Initially use the existing TF‑A measurement and DMA stubs.
+Then connect measurements to tpm-tis-device/swtpm.
+Implement complete DMA protection by controlling QEMU’s SMMUv3.
+
+A likely starting configuration would resemble:
+
+-machine virt,secure=on,virtualization=on,iommu=smmuv3
+-cpu max
+-smp 4
+-bios <TF-A BL1/flash image>
+-device tpm-tis-device,tpmdev=tpm0
+-tpmdev emulator,id=tpm0,chardev=chrtpm
+
+TCG is the practical choice because the demonstration needs the complete EL3/Secure-world machine, not merely an ordinary KVM guest.
+
+The initial port should not need changes to QEMU proper. The likely work is in TF‑A:
+
+QEMU address-map reporting
+identifying the boot PE
+SMMUv3 base-address discovery and control
+error persistence/reset handling
+TPM MMIO discovery and locality management
+platform measurement hooks
+Important limitations
+
+The current TF‑A implementation is not a complete attestation demonstration:
+
+It targets an older revision of DEN0113.
+Some remediation and locality operations remain incomplete.
+Its platform measurement hook prints measurements rather than extending a real TPM.
+There is no Arm64 Linux DRTM entry path upstream.
+TrenchBoot has no implemented Arm component yet; its July 2026 assessment explicitly says so. TrenchBoot Arm DRTM assessment.
+
+Consequently, there are three distinct demonstrations you could build:
+
+Minimal DRTM launch: UEFI → SMC → BL31 DCE → test DLME.
+This should be a modest TF‑A QEMU port.
+Architecturally meaningful DRTM: add SMMUv3 protection, real swtpm PCR extensions, localities and event-log/PCR verification.
+This is the best useful QEMU target.
+Linux/TrenchBoot demonstration: launch an arm64 kernel as the DLME and consume the DLME data in early Linux boot.
+This requires substantial new Linux/bootloader work.
+
+My recommendation is to start with TF‑A + QEMU virt + DRTM ACS, aiming first for the launch/handoff tests, then add swtpm. That provides a demonstrable result without waiting for the Arm64 Linux or TrenchBoot work.
+
+What about patching qemu to capture the SMC calls themselves and implement everything in qemu, is it possible?
+
+Yes. QEMU could intercept the Arm DRTM SMC function IDs and implement the D-CRTM/DCE behavior internally. For an emulation and software-development platform, this may actually be simpler than porting TF‑A.
+
+There is already a strong precedent: QEMU’s TCG implementation intercepts PSCI SMC/HVC calls and acts as “fake EL3 or fake EL2 firmware.” A DRTM dispatcher could use essentially the same mechanism. QEMU’s PSCI SMC implementation.
+
+Proposed model
+
+Add an optional QEMU DRTM service to the virt machine:
+
+Normal-world preamble
+        |
+        | SMC x0 = DRTM_*
+        v
+QEMU SMC dispatcher
+        |
+        +-- validate caller and parameters
+        +-- inspect/control virtual CPUs
+        +-- hash guest physical memory
+        +-- construct DLME data and event log
+        +-- extend virtual TPM PCRs
+        +-- gate device DMA
+        +-- change boot CPU architectural state
+        +-- enter DLME directly
+
+A machine option might look like:
+
+-machine virt,virtualization=on,drtm=on
+
+This could work without secure=on or TF‑A, in the same sense that QEMU’s PSCI implementation can substitute for firmware. QEMU itself would be the trusted agent beneath the guest.
+
+Where to intercept
+
+I would not special-case DRTM in the AArch64 instruction translator. Instead, extend the existing SMC exception-dispatch mechanism:
+
+Let the SMC instruction produce the normal EXCP_SMC.
+Before routing it architecturally to EL3, inspect x0.
+If x0 is in the Arm DRTM function-ID range and the machine has a DRTM provider, dispatch it to that provider.
+Otherwise continue with normal SMC behavior.
+
+Conceptually:
+
+if (arm_is_drtm_call(cpu, excp_type)) {
+        arm_handle_drtm_call(cpu, drtm_device);
+        return;
+}
+
+if (arm_is_psci_call(cpu, excp_type)) {
+        arm_handle_psci_call(cpu);
+        return;
+}
+
+take_normal_exception(cpu, excp_type);
+
+The implementation should be a QOM device or machine-owned service, perhaps TYPE_ARM_DRTM, rather than global state in target/arm. That device would hold:
+
+advertised DRTM version and features;
+active TPM locality;
+sticky DRTM error state;
+whether DMA protection is active;
+protected memory ranges;
+TCB hash table and lock state;
+references to the TPM and DMA-protection providers.
+
+Initially it should be TCG-only. Extending this to KVM would require arranging for the relevant SMCs to exit to userspace, which is a separate problem.
+
+Implementing the calls
+
+The service would recognize at least:
+
+Call	QEMU implementation
+DRTM_VERSION	Return configured DEN0113 version
+DRTM_FEATURES	Describe hash, PCR schema, DMA mode, sizes and boot PE
+DRTM_DYNAMIC_LAUNCH	Validate, measure, protect and transfer control
+DRTM_UNPROTECT_MEMORY	Remove launch-time DMA protection
+DRTM_CLOSE_LOCALITY	Advance/close the emulated TPM locality
+DRTM_GET_ERROR	Return sticky error retained across system reset
+DRTM_SET_ERROR	Set sticky remediation status
+DRTM_SET_TCB_HASH	Store caller-supplied TCB measurements
+DRTM_LOCK_TCB_HASH	Make the TCB hash set immutable
+DRTM_ENABLE_SECURE_INTERRUPTS	Re-enable secure interrupts, if advertised
+
+The Arm interface and hand-off contract are described in DEN0113. The launch SMC receives a physical address, which is convenient for QEMU: it can read the parameter structure and payload directly from the guest physical address space without walking guest page tables.
+
+Dynamic launch mechanics
+
+For DRTM_DYNAMIC_LAUNCH, QEMU would approximately:
+
+Validate that the caller is Non-secure and executing at the highest Non-secure EL.
+Verify that all secondary PEs are off.
+Check interrupt and launch-state requirements.
+Copy and validate the DRTM parameter block from guest physical memory.
+Validate every address, size, alignment and integer addition.
+Hash the DCE identity, configuration, memory map and DLME.
+Reset/initialize the DRTM PCR sequence.
+Build the crypto-agile event log.
+Populate DLME data in the caller-provided region.
+Activate complete or region-based DMA protection.
+Establish the specified boot-PE state.
+Set:
+x0 = DLME region physical base
+x1 = DLME-data offset
+PC = DLME entry point
+Flush QEMU translation state as needed and resume at the new PC.
+
+The successful SMC must not return to the preamble.
+
+Directly manipulating the CPU state is entirely feasible under TCG. QEMU already performs related state transitions for PSCI CPU operations, resets and exception return paths.
+
+The two difficult parts
+TPM integration
+
+Hashing and constructing an event log inside QEMU are straightforward. Extending an existing swtpm is less clean.
+
+QEMU’s TPM design normally has the guest drive a TPM frontend such as tpm-tis-device; QEMU forwards its commands to the backend. An internal DRTM engine would need a privileged path to the same backend while preserving locality and command ordering. QEMU TPM architecture.
+
+Possible approaches:
+
+Internal PCR model first
+
+Keep PCRs 17–22 in the DRTM device and expose a debug/query interface. Easy, but not a genuine TPM attestation demonstration.
+
+Internal TPM command submission
+
+Teach the DRTM device to submit TPM2_PCR_Extend and locality-control operations through QEMU’s TPM backend. More faithful, but requires serialization with guest TPM traffic.
+
+DRTM-aware TPM frontend
+
+Extend tpm-tis-device with an internal privileged API:
+
+tpm_tis_drtm_open_locality(tpm, 4);
+tpm_tis_drtm_extend(tpm, 17, digest);
+tpm_tis_drtm_close_locality(tpm, 3);
+
+This is probably the best long-term arrangement.
+
+Because QEMU’s TIS device already exposes five locality pages on Arm virt, the external guest-visible model is suitable. CRB would be a poorer initial target because QEMU currently documents its implementation as exposing only one locality.
+
+DMA protection
+
+QEMU can trivially claim DMA protection, but accurately enforcing it across every virtual DMA-capable device is harder.
+
+The existing SMMUv3 model only covers devices attached through the relevant translated buses. Devices such as virtio-mmio may access system memory through other address spaces. A convincing implementation needs a central DMA gate that applies to every Non-secure device, not just PCIe.
+
+Two reasonable choices are:
+
+Restrict the demonstration machine to PCIe devices behind QEMU’s SMMUv3 and manipulate that model.
+Introduce a DRTM DMA-filter MemoryRegion/IOMMU layer through which all permitted device DMA must pass.
+
+For a first demonstration, I would advertise complete DMA protection, allow only a deliberately constrained virtual hardware configuration, and reject launch if an uncovered DMA master exists. That is much easier to reason about than attempting to quiesce arbitrary QEMU device models.
+
+Is this architecturally legitimate?
+
+There are two ways to describe it:
+
+Pragmatically: QEMU is supplying a paravirtual firmware service, like its internal PSCI implementation.
+Architecturally: QEMU represents a platform-resident trusted agent or security coprocessor implementing a hardware-backed DRTM design.
+
+It would not validate TF‑A’s implementation, because TF‑A would be bypassed. But it could accurately validate:
+
+the DCE preamble;
+construction of the launch parameter block;
+the SMC ABI;
+DLME layout and entry state;
+Linux or Xen early-DLME handling;
+event-log parsing;
+TPM PCR expectations;
+failure and remediation paths.
+
+That may be exactly the right division for developing the Linux side: QEMU provides deterministic “hardware,” while the guest supplies the preamble and DLME.
+
+Recommendation
+
+I would pursue this in two increments:
+
+Implement DRTM_VERSION, DRTM_FEATURES and a minimal DRTM_DYNAMIC_LAUNCH that hashes the DLME, creates DLME data and transfers control. Use an internal event log and initially constrain the machine to no DMA devices.
+Add an internal interface to tpm-tis-device/swtpm, then introduce enforceable DMA gating and run Arm’s Drtm.efi ACS against it.
+
+This should produce a useful Linux-development platform sooner than completing the TF‑A port, and it keeps the eventual guest-side Linux work independent of any particular firmware implementation.

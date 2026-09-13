@@ -1,0 +1,321 @@
+From f171ac0305bb74e3875c4aa679f93a817b044d11 Mon Sep 17 00:00:00 2001
+From: Jason Gunthorpe <jgg@nvidia.com>
+Date: Sat, 12 Sep 2026 16:42:09 -0300
+Subject: [PATCH 9/9] jgg: Make it build with:
+
+CLANGDWARF_BIN=/usr/lib/llvm-20/bin/ bash tools/scripts/build_drtm_uefi.sh
+---
+ docs/drtm/README.md                           | 15 ++---
+ pal/baremetal/target/RDN2/src/pal_exerciser.c |  2 +
+ pal/uefi_acpi/include/pal_mpam.h              |  4 +-
+ pal/uefi_acpi/include/pal_pmu.h               |  4 +-
+ pal/uefi_acpi/src/pal_pcie.c                  |  4 +-
+ pal/uefi_dt/src/pal_pcie.c                    |  4 +-
+ tools/scripts/build_drtm_uefi.sh              | 67 ++++++++++++++-----
+ val/include/val_sysreg_pe.h                   |  5 +-
+ val/src/AArch64/PeRegSysSupport.S             |  2 +-
+ val/src/acs_ete.c                             |  4 +-
+ 10 files changed, 78 insertions(+), 33 deletions(-)
+
+diff --git a/docs/drtm/README.md b/docs/drtm/README.md
+index fc5093c29d590f..7cb788d4342fa1 100644
+--- a/docs/drtm/README.md
++++ b/docs/drtm/README.md
+@@ -22,12 +22,10 @@ $ cd sysarch-acs <br/>
+ ### UEFI application
+ #### Prerequisites
+ 
+-ACS build requires that the following requirements are met, Please skip this if you are using [DRTM Application Build Script](../../tools/scripts/build_drtm_uefi.sh).
++The [DRTM Application Build Script](../../tools/scripts/build_drtm_uefi.sh) clones EDK2 and EDK2-libc automatically. The host must provide:
+ 
+ - Any mainstream Linux based OS distribution.
+-- git clone EDK2 tree.
+-- git clone EDK2-libc tree.
+-- Install GCC-ARM 14.3 [toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads).
++- Install Clang/LLVM, including `clang`, `ld.lld`, `llvm-ar`, and `llvm-objcopy`.
+ - Install the build prerequisite packages to build EDK2. The details of the packages are beyond the scope of this document.
+ 
+ #### Build Steps
+@@ -41,10 +39,11 @@ The following output file is created in /path/to/sysarch-acs/workspace/output/:
+ 
+ - Drtm.efi
+ 
+-#### Note : Steps to get toolchain
+-- wget https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+-- tar -xf arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+-- export GCC_AARCH64_PREFIX= GCC 14.3 toolchain path pointing to arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
++#### Note: Selecting the LLVM toolchain
++The build script finds an unversioned `clang` in `PATH` or a versioned LLVM installation under `/usr/lib`.
++To select a different installation, export `CLANGDWARF_BIN` as the directory containing the LLVM tools:
++
++`export CLANGDWARF_BIN=/path/to/llvm/bin/`
+ 
+ ## Test suite execution in UEFI
+ 
+diff --git a/pal/baremetal/target/RDN2/src/pal_exerciser.c b/pal/baremetal/target/RDN2/src/pal_exerciser.c
+index 019c06ac609f84..798d02ea591864 100644
+--- a/pal/baremetal/target/RDN2/src/pal_exerciser.c
++++ b/pal/baremetal/target/RDN2/src/pal_exerciser.c
+@@ -701,6 +701,7 @@ uint32_t pal_exerciser_get_data(EXERCISER_DATA_TYPE Type, exerciser_data_t *Data
+               Data->bar_space.type = MMIO_NON_PREFETCHABLE;
+           return 0;
+       case EXERCISER_DATA_MMIO_SPACE:
++      {
+           uint32_t BarRegLowerValue = 0;
+           uint32_t Seg, Bus, Dev, Func;
+           uint32_t Offset;
+@@ -739,6 +740,7 @@ uint32_t pal_exerciser_get_data(EXERCISER_DATA_TYPE Type, exerciser_data_t *Data
+           }
+ 
+           return 1;
++      }
+       default:
+           return 1;
+     }
+diff --git a/pal/uefi_acpi/include/pal_mpam.h b/pal/uefi_acpi/include/pal_mpam.h
+index d410cd6e35927f..ef33c9bd8f0ded 100644
+--- a/pal/uefi_acpi/include/pal_mpam.h
++++ b/pal/uefi_acpi/include/pal_mpam.h
+@@ -21,7 +21,7 @@
+ /* Not defined in EDK2: Remove once EDK2 supports MPAM*/
+ #define MEMORY_RESOURCE_PARTITIONING_AND_MONITORING_TABLE_SIGNATURE SIGNATURE_32('M', 'P', 'A', 'M')
+ 
+-#pragma pack(1)
++#pragma pack(push, 1)
+ 
+ typedef struct {
+     EFI_ACPI_DESCRIPTION_HEADER header;
+@@ -63,6 +63,6 @@ typedef struct {
+     UINT32 reserved;
+ } EFI_ACPI_MPAM_FUNC_DEPEN_DESC_STRUCTURE;
+ 
+-#pragma pack()
++#pragma pack(pop)
+ 
+ #endif
+diff --git a/pal/uefi_acpi/include/pal_pmu.h b/pal/uefi_acpi/include/pal_pmu.h
+index 0fcfffab24d466..c4db290f6e546e 100644
+--- a/pal/uefi_acpi/include/pal_pmu.h
++++ b/pal/uefi_acpi/include/pal_pmu.h
+@@ -51,7 +51,7 @@ typedef enum {
+ 
+ #define PMU_EVENT_INVALID 0xFFFFFFFF
+ 
+-#pragma pack(1)
++#pragma pack(push, 1)
+ 
+ typedef struct {
+     EFI_ACPI_DESCRIPTION_HEADER header;
+@@ -80,4 +80,6 @@ typedef struct{
+     UINT32 event_id;
+ } event_details;
+ 
++#pragma pack(pop)
++
+ #endif
+diff --git a/pal/uefi_acpi/src/pal_pcie.c b/pal/uefi_acpi/src/pal_pcie.c
+index e851e12daa6543..85f2d5004f028c 100644
+--- a/pal/uefi_acpi/src/pal_pcie.c
++++ b/pal/uefi_acpi/src/pal_pcie.c
+@@ -294,7 +294,7 @@ pal_pcie_bar_mem_read(UINT32 Bdf, UINT64 address, UINT32 *data)
+     Status = gBS->HandleProtocol (HandleBuffer[Index], &gEfiPciRootBridgeIoProtocolGuid, (VOID **)&Pci);
+     if (!EFI_ERROR (Status)) {
+       if (Pci->SegmentNumber == InputSeg) {
+-          Status = Pci->Mem.Read (Pci, EfiPciIoWidthUint32, address, 1, data);
++          Status = Pci->Mem.Read (Pci, EfiPciWidthUint32, address, 1, data);
+           pal_mem_free(HandleBuffer);
+           if (!EFI_ERROR (Status))
+             return 0;
+@@ -343,7 +343,7 @@ pal_pcie_bar_mem_write(UINT32 Bdf, UINT64 address, UINT32 data)
+     Status = gBS->HandleProtocol (HandleBuffer[Index], &gEfiPciRootBridgeIoProtocolGuid, (VOID **)&Pci);
+     if (!EFI_ERROR (Status)) {
+       if (Pci->SegmentNumber == InputSeg) {
+-          Status = Pci->Mem.Write (Pci, EfiPciIoWidthUint32, address, 1, &data);
++          Status = Pci->Mem.Write (Pci, EfiPciWidthUint32, address, 1, &data);
+           pal_mem_free(HandleBuffer);
+           if (!EFI_ERROR (Status))
+             return 0;
+diff --git a/pal/uefi_dt/src/pal_pcie.c b/pal/uefi_dt/src/pal_pcie.c
+index b4f348ae5330df..8c26861ca4e8e6 100644
+--- a/pal/uefi_dt/src/pal_pcie.c
++++ b/pal/uefi_dt/src/pal_pcie.c
+@@ -286,7 +286,7 @@ pal_pcie_bar_mem_read(UINT32 Bdf, UINT64 address, UINT32 *data)
+     Status = gBS->HandleProtocol (HandleBuffer[Index], &gEfiPciRootBridgeIoProtocolGuid, (VOID **)&Pci);
+     if (!EFI_ERROR (Status)) {
+       if (Pci->SegmentNumber == InputSeg) {
+-          Status = Pci->Mem.Read (Pci, EfiPciIoWidthUint32, address, 1, data);
++          Status = Pci->Mem.Read (Pci, EfiPciWidthUint32, address, 1, data);
+           pal_mem_free(HandleBuffer);
+           if (!EFI_ERROR (Status))
+             return 0;
+@@ -335,7 +335,7 @@ pal_pcie_bar_mem_write(UINT32 Bdf, UINT64 address, UINT32 data)
+     Status = gBS->HandleProtocol (HandleBuffer[Index], &gEfiPciRootBridgeIoProtocolGuid, (VOID **)&Pci);
+     if (!EFI_ERROR (Status)) {
+       if (Pci->SegmentNumber == InputSeg) {
+-          Status = Pci->Mem.Write (Pci, EfiPciIoWidthUint32, address, 1, &data);
++          Status = Pci->Mem.Write (Pci, EfiPciWidthUint32, address, 1, &data);
+           pal_mem_free(HandleBuffer);
+           if (!EFI_ERROR (Status))
+             return 0;
+diff --git a/tools/scripts/build_drtm_uefi.sh b/tools/scripts/build_drtm_uefi.sh
+index feed1d95760f95..a3a32ab51dc1f7 100644
+--- a/tools/scripts/build_drtm_uefi.sh
++++ b/tools/scripts/build_drtm_uefi.sh
+@@ -18,26 +18,50 @@
+ #!/bin/bash
+ 
+ WORK_DIR=${PWD}/workspace
+-HOME_DIR=${PWD}
++SOURCE_DIR=${PWD}
++
++# edk2's CLANGDWARF toolchain expects this variable to name a directory
++# containing clang, ld.lld, llvm-ar, and llvm-objcopy.  Honour an explicit
++# setting first, then try the unversioned compiler and common Linux LLVM
++# installation directories.
++if [ -z "${CLANGDWARF_BIN:-}" ]
++then
++    CLANG_PATH=$(command -v clang 2>/dev/null)
++    if [ -z "${CLANG_PATH}" ]
++    then
++        CLANG_PATH=$(compgen -G '/usr/lib/llvm-*/bin/clang' | sort -V | tail -n 1)
++    fi
++
++    if [ -z "${CLANG_PATH}" ]
++    then
++        echo "Unable to find clang. Set CLANGDWARF_BIN to the LLVM bin directory."
++        return 1
++    fi
++
++    CLANGDWARF_BIN=$(dirname "$(readlink -f "${CLANG_PATH}")")
++fi
++
++export CLANGDWARF_BIN="${CLANGDWARF_BIN%/}/"
++for LLVM_TOOL in clang ld.lld llvm-ar llvm-objcopy
++do
++    if [ ! -x "${CLANGDWARF_BIN}${LLVM_TOOL}" ]
++    then
++        echo "Missing ${CLANGDWARF_BIN}${LLVM_TOOL}. Set CLANGDWARF_BIN to a complete LLVM bin directory."
++        return 1
++    fi
++done
+ 
+ if [ ! -d workspace ]
+ then
+     mkdir workspace
+ fi
+ cd ${WORK_DIR}
+-if [ ! -d arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu ]
+-then
+-    rm -f arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+-    wget https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+-    tar -xf arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+-fi
+-
+ if [ ! -d output ]
+ then
+     mkdir output
+ fi
+ 
+-echo "Building DRTM ACS for UEFI"
++echo "Building DRTM ACS for UEFI with LLVM from ${CLANGDWARF_BIN}"
+ if [ ! -d edk2 ]
+ then
+     git clone --recursive --branch edk2-stable202511 https://github.com/tianocore/edk2.git
+@@ -47,17 +71,30 @@ cd ${WORK_DIR}/edk2
+ make -C BaseTools
+ 
+ rm -f ShellPkg/Application/sysarch-acs
+-rm -rf Build/Shell/DEBUG_GCC/*
++rm -rf Build/Shell/DEBUG_CLANGDWARF/*
+ 
+-ln -s ${HOME_DIR} ShellPkg/Application/sysarch-acs
+-export GCC_AARCH64_PREFIX=${WORK_DIR}/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
++ln -s ${SOURCE_DIR} ShellPkg/Application/sysarch-acs
++export ACS_PATH=${SOURCE_DIR}
+ export PACKAGES_PATH=${WORK_DIR}/edk2/edk2-libc
+ 
+ source edksetup.sh
++git checkout ShellPkg/ShellPkg.dsc
+ git apply ShellPkg/Application/sysarch-acs/patches/edk2_drtm.patch
+-source ShellPkg/Application/sysarch-acs/tools/scripts/acsbuild.sh drtm
+-cp Build/Shell/DEBUG_GCC/AARCH64/Drtm.efi ${WORK_DIR}/output
++if ! build -a AARCH64 -t CLANGDWARF -p ShellPkg/ShellPkg.dsc \
++    -m ShellPkg/Application/sysarch-acs/apps/uefi/Drtm.inf
++then
++    cd ${SOURCE_DIR}
++    echo "Failed to build Drtm.efi"
++    return 1
++fi
+ 
+-cd ${HOME_DIR}
++if ! cp Build/Shell/DEBUG_CLANGDWARF/AARCH64/Drtm.efi ${WORK_DIR}/output
++then
++    cd ${SOURCE_DIR}
++    echo "Failed to copy Drtm.efi to ${WORK_DIR}/output"
++    return 1
++fi
++
++cd ${SOURCE_DIR}
+ 
+ echo "Drtm EFI Application is available here : ${WORK_DIR}/output/Drtm.efi"
+diff --git a/val/include/val_sysreg_pe.h b/val/include/val_sysreg_pe.h
+index 4b77d70b132559..a35417107af7e2 100644
+--- a/val/include/val_sysreg_pe.h
++++ b/val/include/val_sysreg_pe.h
+@@ -16,6 +16,9 @@
+ #ifndef ID_AA64PFR2_EL1
+ #define ID_AA64PFR2_EL1 S3_0_C0_C4_2
+ #endif
++#ifndef BRBIDR0_EL1
++#define BRBIDR0_EL1 S2_1_C9_C2_0
++#endif
+ 
+ SYSREG_READ_FUNC(id_pfr0_el1)
+ SYSREG_READ_FUNC(id_pfr1_el1)
+@@ -99,7 +102,7 @@ SYSREG_READ_FUNC(pmceid1_el0)
+ SYSREG_READ_FUNC(id_aa64zfr0_el1)
+ RENAME_SYSREG_READ_FUNC(id_aa64zfr1_el1, ID_AA64ZFR1_EL1)
+ RENAME_SYSREG_READ_FUNC(id_aa64pfr2_el1, ID_AA64PFR2_EL1)
+-SYSREG_READ_FUNC(brbidr0_el1)
++RENAME_SYSREG_READ_FUNC(brbidr0_el1, BRBIDR0_EL1)
+ 
+ RENAME_SYSREG_READ_FUNC(id_aa64mmfr2_el1, ID_AA64MMFR2_EL1)
+ SYSREG_READ_FUNC(id_aa64mmfr3_el1)
+diff --git a/val/src/AArch64/PeRegSysSupport.S b/val/src/AArch64/PeRegSysSupport.S
+index a5d9f397116b8c..c9b073e5207a40 100644
+--- a/val/src/AArch64/PeRegSysSupport.S
++++ b/val/src/AArch64/PeRegSysSupport.S
+@@ -114,7 +114,7 @@ ASM_PFX(AA64EnableETETrace):
+ 
+ ASM_PFX(AA64EnableTRBUTrace):
+     /* Add an offset for different PE */
+-    mov x0, x0, lsl #12   // x0 has Current PE Index
++    lsl x0, x0, #12       // x0 has Current PE Index
+     add x1, x1, x0        // Updated Base Address for Curent PE
+ 
+     /* Update TRBBASER_EL1, TRBPTR_EL1 */
+diff --git a/val/src/acs_ete.c b/val/src/acs_ete.c
+index df3d58c8e881af..92114b848f8469 100644
+--- a/val/src/acs_ete.c
++++ b/val/src/acs_ete.c
+@@ -305,6 +305,7 @@ uint64_t parse_tracestream(uint8_t *trace_bytes, uint64_t trace_size)
+               break;
+ 
+         default:
++        {
+               uint64_t header = trace_bytes[byte_index];
+ 
+               /* Handles Cycle Count, Mispredict, Cancel, Event, Atom,
+@@ -329,7 +330,8 @@ uint64_t parse_tracestream(uint8_t *trace_bytes, uint64_t trace_size)
+                                                                              0, pe_index);
+                   return TRACE_PKT_INVALID;
+               }
+-             break;
++              break;
++        }
+       }
+       byte_index += pkt_len;
+   }
+-- 
+2.43.0
+
