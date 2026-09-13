@@ -65,6 +65,10 @@ tests = {
     meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
     crypto
   ],
+  'test-virt-drtm-tcb': [
+    meson.project_source_root() / 'hw/arm/virt-drtm-tcb.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
+  ],
 }
 
 if have_system or have_tools

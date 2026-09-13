@@ -5,6 +5,7 @@ arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files(
   'virt-drtm-event-log.c',
   'virt-drtm-measurement.c',
   'virt-drtm-params.c',
+  'virt-drtm-tcb.c',
 ))
 arm_common_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
 arm_common_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic_boards.c'))
