@@ -1,20 +1,21 @@
 arm_common_ss = ss.source_set()
 arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files(
   'virt.c',
+  'virt-drtm.c',
+  'virt-drtm-features.c',
+  'virt-drtm-smc.c',
+  'virt-drtm-service-launch.c',
+  'virt-drtm-service-launch-core.c',
+  'virt-drtm-launch.c',
   'virt-drtm-tcb.c',
+  'virt-drtm-workflow.c',
   'virt-drtm-data.c',
   'virt-drtm-event-log.c',
-  'virt-drtm-features.c',
-  'virt-drtm-launch.c',
   'virt-drtm-measurement.c',
   'virt-drtm-tpm.c',
   'virt-drtm-tpm-banks.c',
   'virt-drtm-tpm-frontend.c',
-  'virt-drtm-workflow.c',
   'virt-drtm-params.c',
-  'virt-drtm-service-launch.c',
-  'virt-drtm-service-launch-core.c',
-  'virt-drtm-smc.c',
 ))
 arm_common_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
 arm_common_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic_boards.c'))

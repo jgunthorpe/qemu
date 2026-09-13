@@ -65,6 +65,28 @@ static void *tpm_emu_tpm_thread(void *data)
                          s->tpm_msg->len - minhlen, &error_abort);
         s->tpm_msg->code = be32_to_cpu(s->tpm_msg->code);
 
+        if (s->provide_pcr_banks && s->tpm_version == TPM_VERSION_2_0 &&
+            s->tpm_msg->code == 0x0000017a) { /* TPM2_GetCapability */
+            uint8_t *response;
+
+            s->tpm_msg = g_realloc(s->tpm_msg, 25);
+            response = (uint8_t *)s->tpm_msg;
+            stw_be_p(response, TPM2_ST_NO_SESSIONS);
+            stl_be_p(response + 2, 25);
+            stl_be_p(response + 6, 0);
+            response[10] = 0;        /* moreData */
+            stl_be_p(response + 11, 5); /* TPM_CAP_PCRS */
+            stl_be_p(response + 15, 1);
+            stw_be_p(response + 19, 0x000b); /* TPM_ALG_SHA256 */
+            response[21] = 3;
+            response[22] = 0;
+            response[23] = 0;
+            response[24] = 0x06;     /* PCR17 and PCR18 */
+            g_atomic_int_inc(&s->pcr_bank_queries);
+            qio_channel_write(ioc, (char *)response, 25, &error_abort);
+            continue;
+        }
+
         /* reply error */
         switch (s->tpm_version) {
         case TPM_VERSION_2_0:

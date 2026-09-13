@@ -21,7 +21,7 @@ AARCH64_TESTS += $(AARCH64_S_TESTS)
 
 SMCCC_TEST_SRC=$(SRC_PATH)/tests/tcg/arm/system/smccc.c.inc
 SMCCC_CALL_SRC=$(SRC_PATH)/tests/tcg/arm/system/smccc-call.S
-AARCH64_TESTS += smccc-hvc smccc-smc
+AARCH64_TESTS += smccc-hvc smccc-smc smccc-drtm
 
 CRT_PATH=$(AARCH64_SYSTEM_SRC)
 LINK_SCRIPT=$(AARCH64_SYSTEM_SRC)/kernel.ld
@@ -62,6 +62,10 @@ smccc-smc: $(SMCCC_TEST_SRC) $(LINK_SCRIPT) $(CRT_OBJS) $(MINILIB_OBJS) smccc-ca
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -DUSE_SMC -x c $< -x none -o $@ \
 		$(LDFLAGS) boot.o smccc-call.o
 
+smccc-drtm: $(SMCCC_TEST_SRC) $(LINK_SCRIPT) $(CRT_OBJS) $(MINILIB_OBJS) smccc-call.o
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -DUSE_SMC -DTEST_DRTM_DORMANT \
+		-x c $< -x none -o $@ $(LDFLAGS) boot.o smccc-call.o
+
 memory: CFLAGS+=-DCHECK_UNALIGNED=1
 
 memory-sve: memory.c $(LINK_SCRIPT) $(CRT_OBJS) $(MINILIB_OBJS)
@@ -80,6 +84,17 @@ QEMU_BASE_ARGS=-semihosting-config enable=on,target=native,chardev=output
 QEMU_OPTS+=$(QEMU_BASE_MACHINE) $(QEMU_BASE_ARGS) -kernel
 
 run-smccc-smc: QEMU_BASE_MACHINE=-M virt,virtualization=on -cpu max -display none
+run-smccc-drtm: smccc-drtm
+	$(call run-test, $<, \
+	  $(QEMU) -monitor none -display none \
+		  -chardev file$(COMMA)path=$<.out$(COMMA)id=output \
+		  -M virt$(COMMA)virtualization=on$(COMMA)x-drtm=on -cpu max \
+		  $(QEMU_BASE_ARGS) \
+		  -trace enable=virt_drtm_workflow_call$(COMMA)file=$<.trace \
+		  -kernel $<)
+	$(call quiet-command, \
+	  test "$$(grep -c 'state=dormant' $<.trace)" -eq 9, \
+	  TEST,exact DRTM SMC provider dispatch under BQL)
 
 # console test is manual only
 QEMU_SEMIHOST=-serial none -chardev stdio,mux=on,id=stdio0 -semihosting-config enable=on,chardev=stdio0 -mon chardev=stdio0,mode=readline

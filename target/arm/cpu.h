@@ -2652,6 +2652,11 @@ bool arm_cpu_register_firmware_smc_provider(
     ARMCPU *cpu, const ARMFirmwareSMCRoute *route,
     ARMFirmwareSMCHandler *handler, void *opaque, Error **errp);
 
+/* Undo a registration during machine initialization error unwinding. */
+bool arm_cpu_unregister_firmware_smc_provider(
+    ARMCPU *cpu, const ARMFirmwareSMCRoute *route,
+    ARMFirmwareSMCHandler *handler, void *opaque);
+
 /* Return the address space index to use for a memory access */
 static inline int arm_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
 {

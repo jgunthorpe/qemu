@@ -562,7 +562,7 @@ int main(int argc, char **argv)
     char *args;
     char *tmp_path = g_dir_make_tmp("qemu-tpm-tis-i2c-test.XXXXXX", NULL);
     GThread *thread;
-    TPMTestState test;
+    TPMTestState test = { 0 };
 
     module_call_init(MODULE_INIT_QOM);
     g_test_init(&argc, &argv, NULL);

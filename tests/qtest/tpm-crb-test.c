@@ -142,7 +142,7 @@ int main(int argc, char **argv)
     int ret;
     char *args, *tmp_path = g_dir_make_tmp("qemu-tpm-crb-test.XXXXXX", NULL);
     GThread *thread;
-    TPMTestState test;
+    TPMTestState test = { 0 };
 
     module_call_init(MODULE_INIT_QOM);
     g_test_init(&argc, &argv, NULL);

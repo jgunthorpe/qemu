@@ -15,6 +15,15 @@
 #define PSCI_FEATURES_FN       0x8400000aU
 #define PSCI_NOT_SUPPORTED     ((uintptr_t)-1)
 #define UNKNOWN_PSCI_FN        0x8400ffffU
+#define DRTM_VERSION_FN        0xc4000110U
+#define DRTM_FEATURES_FN       0xc4000111U
+#define DRTM_UNPROTECT_FN      0xc4000113U
+#define DRTM_LAUNCH_FN         0xc4000114U
+#define DRTM_CLOSE_LOCALITY_FN 0xc4000115U
+#define DRTM_GET_ERROR_FN      0xc4000116U
+#define DRTM_SET_ERROR_FN      0xc4000117U
+#define DRTM_ENABLE_IRQS_FN    0xc400011aU
+#define DRTM_OPTIONAL_TCB_FN   0xc4000118U
 
 typedef struct CallResult {
     uintptr_t reg[18];
@@ -72,6 +81,29 @@ int main(void)
     failures += check("unknown PSCI function", UNKNOWN_PSCI_FN,
                       ~(uintptr_t)1,
                       PSCI_NOT_SUPPORTED);
+    failures += check("DRTM_VERSION (default off)", DRTM_VERSION_FN,
+                      ~(uintptr_t)1, PSCI_NOT_SUPPORTED);
+
+#ifdef TEST_DRTM_DORMANT
+    failures += check("DRTM_VERSION", DRTM_VERSION_FN, ~(uintptr_t)1,
+                      PSCI_NOT_SUPPORTED);
+    failures += check("DRTM_FEATURES", DRTM_FEATURES_FN, DRTM_VERSION_FN,
+                      PSCI_NOT_SUPPORTED);
+    failures += check("DRTM_UNPROTECT_MEMORY", DRTM_UNPROTECT_FN,
+                      ~(uintptr_t)1, PSCI_NOT_SUPPORTED);
+    failures += check("DRTM_DYNAMIC_LAUNCH", DRTM_LAUNCH_FN,
+                      ~(uintptr_t)1, PSCI_NOT_SUPPORTED);
+    failures += check("DRTM_CLOSE_LOCALITY", DRTM_CLOSE_LOCALITY_FN, 2,
+                      PSCI_NOT_SUPPORTED);
+    failures += check("DRTM_GET_ERROR", DRTM_GET_ERROR_FN, ~(uintptr_t)1,
+                      PSCI_NOT_SUPPORTED);
+    failures += check("DRTM_SET_ERROR", DRTM_SET_ERROR_FN, 1,
+                      PSCI_NOT_SUPPORTED);
+    failures += check("DRTM_ENABLE_SECURE_INTERRUPTS", DRTM_ENABLE_IRQS_FN,
+                      ~(uintptr_t)1, PSCI_NOT_SUPPORTED);
+    failures += check("optional DRTM_SET_TCB_HASH", DRTM_OPTIONAL_TCB_FN,
+                      ~(uintptr_t)1, PSCI_NOT_SUPPORTED);
+#endif
 
     if (!failures) {
         ml_printf("SMCCC/PSCI checks passed\n");

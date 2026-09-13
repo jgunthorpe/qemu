@@ -212,6 +212,7 @@ struct VirtMachineState {
     MemoryRegion *secure_sysmem;
     bool pci_preserve_config;
     GPtrArray *smmuv3_devices;
+    bool drtm;
     VirtDRTMState drtm_state;
 };
 

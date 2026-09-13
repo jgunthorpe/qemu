@@ -47,6 +47,8 @@ typedef struct TPMTestState {
     GThread *emu_tpm_thread;
     struct tpm_hdr *tpm_msg;
     enum TPMVersion tpm_version;
+    bool provide_pcr_banks;
+    gint pcr_bank_queries;
 } TPMTestState;
 
 void tpm_emu_test_wait_cond(TPMTestState *s);

@@ -118,3 +118,28 @@ bool arm_firmware_smc_registry_register(
     g_array_append_val(registry->providers, provider);
     return true;
 }
+
+bool arm_firmware_smc_registry_unregister(
+    ARMFirmwareSMCRegistry *registry, const ARMFirmwareSMCRoute *route,
+    ARMFirmwareSMCHandler *handler, void *opaque)
+{
+    unsigned int i;
+
+    if (registry->frozen || !route || !handler) {
+        return false;
+    }
+
+    for (i = 0; i < registry->providers->len; i++) {
+        const ARMFirmwareSMCProvider *provider =
+            &g_array_index(registry->providers, ARMFirmwareSMCProvider, i);
+
+        if (provider->route.conduit == route->conduit &&
+            provider->route.function_base == route->function_base &&
+            provider->route.function_mask == route->function_mask &&
+            provider->handler == handler && provider->opaque == opaque) {
+            g_array_remove_index(registry->providers, i);
+            return true;
+        }
+    }
+    return false;
+}

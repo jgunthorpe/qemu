@@ -33,7 +33,7 @@ int main(int argc, char **argv)
 {
     char *tmp_path = g_dir_make_tmp("qemu-tpm-tis-device-test.XXXXXX", NULL);
     GThread *thread;
-    TPMTestState test;
+    TPMTestState test = { 0 };
     char *args;
     int ret;
 

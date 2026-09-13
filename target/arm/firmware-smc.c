@@ -54,6 +54,17 @@ bool arm_cpu_register_firmware_smc_provider(
                                               route, handler, opaque, errp);
 }
 
+bool arm_cpu_unregister_firmware_smc_provider(
+    ARMCPU *cpu, const ARMFirmwareSMCRoute *route,
+    ARMFirmwareSMCHandler *handler, void *opaque)
+{
+    if (phase_check(PHASE_MACHINE_READY)) {
+        return false;
+    }
+    return arm_firmware_smc_registry_unregister(&cpu->firmware_smc_registry,
+                                                route, handler, opaque);
+}
+
 bool arm_is_firmware_smc_call(ARMCPU *cpu, int excp_type)
 {
     return find_provider(cpu, excp_type) != NULL;

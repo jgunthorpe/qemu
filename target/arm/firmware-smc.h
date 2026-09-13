@@ -46,6 +46,9 @@ void arm_firmware_smc_registry_freeze(ARMFirmwareSMCRegistry *registry);
 bool arm_firmware_smc_registry_register(
     ARMFirmwareSMCRegistry *registry, const ARMFirmwareSMCRoute *route,
     ARMFirmwareSMCHandler *handler, void *opaque, Error **errp);
+bool arm_firmware_smc_registry_unregister(
+    ARMFirmwareSMCRegistry *registry, const ARMFirmwareSMCRoute *route,
+    ARMFirmwareSMCHandler *handler, void *opaque);
 const ARMFirmwareSMCProvider *arm_firmware_smc_registry_lookup(
     const ARMFirmwareSMCRegistry *registry, ARMFirmwareSMCConduit conduit,
     uint32_t function);

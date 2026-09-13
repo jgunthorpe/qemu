@@ -1539,7 +1539,7 @@ static void test_acpi_tcg_tpm(const char *machine, const char *arch,
     gchar *tmp_dir_name = g_strdup_printf("qemu-test_acpi_%s_tcg_%s.XXXXXX",
                                           machine, tpm_if);
     char *tmp_path = g_dir_make_tmp(tmp_dir_name, NULL);
-    TPMTestState test;
+    TPMTestState test = { 0 };
     test_data data = {};
     GThread *thread;
     const char *suffix = tpm_version == TPM_VERSION_2_0 ? "tpm2" : "tpm12";

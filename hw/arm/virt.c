@@ -2427,6 +2427,12 @@ void virt_machine_done(Notifier *notifier, void *data)
 
     virt_smmuv3_dev_link_cmdqv(vms);
 
+    /* Command-line sysbus devices, including tpm-tis-device, now exist. */
+    if (vms->drtm &&
+        !virt_drtm_start(&vms->drtm_state, &error_fatal)) {
+        g_assert_not_reached();
+    }
+
     /*
      * If the user provided a dtb, we assume the dynamic sysbus nodes
      * already are integrated there. This corresponds to a use case where
@@ -2961,6 +2967,26 @@ static void machvirt_init(MachineState *machine)
         vms->psci_conduit = QEMU_PSCI_CONDUIT_HVC;
     }
 
+    if (vms->drtm) {
+        if (!tcg_enabled()) {
+            error_report("mach-virt: x-drtm requires TCG");
+            exit(1);
+        }
+        if (vms->secure) {
+            error_report("mach-virt: x-drtm requires secure=off");
+            exit(1);
+        }
+        if (vms->psci_conduit != QEMU_PSCI_CONDUIT_SMC) {
+            error_report("mach-virt: x-drtm requires the SMC conduit "
+                         "(virtualization=on)");
+            exit(1);
+        }
+        if (max_cpus != smp_cpus) {
+            error_report("mach-virt: x-drtm does not support CPU hotplug");
+            exit(1);
+        }
+    }
+
     /*
      * The maximum number of CPUs depends on the GIC version, or on how
      * many redistributors we can fit into the memory map (which in turn
@@ -3141,6 +3167,16 @@ static void machvirt_init(MachineState *machine)
         object_unref(cpuobj);
     }
 
+    if (vms->drtm) {
+        if (!aarch64) {
+            error_report("mach-virt: x-drtm requires AArch64 CPUs");
+            exit(1);
+        }
+        if (!virt_drtm_register_routes(&vms->drtm_state, &error_fatal)) {
+            g_assert_not_reached();
+        }
+    }
+
     /* Now we've created the CPUs we can see if they have the hypvirt timer */
     vms->ns_el2_virt_timer_irq = ns_el2_virt_timer_present() &&
         !vmc->no_ns_el2_virt_timer_irq;
@@ -3295,6 +3331,16 @@ static void virt_set_virt(Object *obj, bool value, Error **errp)
      * However, it needs to know if nested virt is enabled at init time.
      */
     hvf_nested_virt_enable(value);
+}
+
+static bool virt_get_drtm(Object *obj, Error **errp)
+{
+    return VIRT_MACHINE(obj)->drtm;
+}
+
+static void virt_set_drtm(Object *obj, bool value, Error **errp)
+{
+    VIRT_MACHINE(obj)->drtm = value;
 }
 
 static bool virt_get_highmem(Object *obj, Error **errp)
@@ -4226,6 +4272,13 @@ static void virt_machine_class_init(ObjectClass *oc, const void *data)
                                           "guest CPU which implements the ARM "
                                           "Virtualization Extensions");
 
+    object_class_property_add_bool(oc, "x-drtm", virt_get_drtm,
+                                   virt_set_drtm);
+    object_class_property_set_description(oc, "x-drtm",
+                                          "Enable experimental Arm DRTM 1.4 "
+                                          "firmware-contract emulation "
+                                          "(requires TPM 2.0)");
+
     object_class_property_add_bool(oc, "highmem", virt_get_highmem,
                                    virt_set_highmem);
     object_class_property_set_description(oc, "highmem",
@@ -4404,6 +4457,7 @@ static void virt_instance_init(Object *obj)
     cxl_machine_init(obj, &vms->cxl_devices_state);
 
     vms->smmuv3_devices = g_ptr_array_new_with_free_func(NULL);
+    object_initialize_child(obj, "drtm", &vms->drtm_state, TYPE_VIRT_DRTM);
 }
 
 static void virt_instance_finalize(Object *obj)

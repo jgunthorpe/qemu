@@ -69,6 +69,15 @@ static void test_exact_match(void)
     route.function_mask = 0;
     g_assert_nonnull(arm_firmware_smc_registry_lookup(
         &registry, ARM_FIRMWARE_SMCCC_CONDUIT_SMC, 0x84000110));
+    route.function_mask = BIT_ULL(0) | BIT_ULL(2) | BIT_ULL(63);
+    g_assert_false(arm_firmware_smc_registry_unregister(
+                       &registry, &route, dummy_handler, NULL));
+    g_assert_true(arm_firmware_smc_registry_unregister(
+                      &registry, &route, dummy_handler, &calls));
+    g_assert_null(arm_firmware_smc_registry_lookup(
+        &registry, ARM_FIRMWARE_SMCCC_CONDUIT_SMC, 0x84000110));
+    g_assert_false(arm_firmware_smc_registry_unregister(
+                       &registry, &route, dummy_handler, &calls));
     arm_firmware_smc_registry_destroy(&registry);
 }
 
