@@ -53,6 +53,9 @@ tests = {
   'test-arm-firmware-smc': [
     meson.project_source_root() / 'target/arm/firmware-smc-registry.c'
   ],
+  'test-virt-drtm-params': [
+    meson.project_source_root() / 'hw/arm/virt-drtm-params.c'
+  ],
 }
 
 if have_system or have_tools
