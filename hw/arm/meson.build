@@ -4,6 +4,7 @@ arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files(
   'virt-drtm-tcb.c',
   'virt-drtm-data.c',
   'virt-drtm-event-log.c',
+  'virt-drtm-features.c',
   'virt-drtm-launch.c',
   'virt-drtm-measurement.c',
   'virt-drtm-tpm.c',

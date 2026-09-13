@@ -96,6 +96,9 @@ tests = {
 
 if have_tpm
   tests += {
+    'test-virt-drtm-features': [
+      meson.project_source_root() / 'hw/arm/virt-drtm-features.c',
+    ],
     'test-tpm-platform': [
       meson.project_source_root() / 'backends/tpm/tpm_platform.c',
       meson.project_source_root() / 'hw/arm/virt-drtm-tpm-frontend.c',
