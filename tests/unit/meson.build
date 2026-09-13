@@ -59,6 +59,12 @@ tests = {
   'test-virt-drtm-data': [
     meson.project_source_root() / 'hw/arm/virt-drtm-data.c'
   ],
+  'test-virt-drtm-event-log': [
+    meson.project_source_root() / 'hw/arm/virt-drtm-event-log.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-measurement.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
+    crypto
+  ],
 }
 
 if have_system or have_tools

@@ -2,6 +2,8 @@ arm_common_ss = ss.source_set()
 arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files(
   'virt.c',
   'virt-drtm-data.c',
+  'virt-drtm-event-log.c',
+  'virt-drtm-measurement.c',
   'virt-drtm-params.c',
 ))
 arm_common_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
