@@ -77,6 +77,16 @@ tests = {
     meson.project_source_root() / 'hw/arm/virt-drtm-tcb.c',
     meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
   ],
+  'test-virt-drtm-smc': [
+    meson.project_source_root() / 'hw/arm/virt-drtm-smc.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-workflow.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-tcb.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-params.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-event-log.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-measurement.c',
+    crypto,
+  ],
   'test-virt-drtm-tpm': [
     meson.project_source_root() / 'hw/arm/virt-drtm-tpm.c',
     meson.project_source_root() / 'hw/arm/virt-drtm-measurement.c',
