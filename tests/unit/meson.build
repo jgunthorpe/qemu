@@ -99,6 +99,23 @@ if have_tpm
     'test-virt-drtm-features': [
       meson.project_source_root() / 'hw/arm/virt-drtm-features.c',
     ],
+    'test-virt-drtm-service-launch': [
+      meson.project_source_root() / 'backends/tpm/tpm_platform.c',
+      meson.project_source_root() / 'hw/tpm/tpm_tis_common.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-features.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-service-launch-core.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-launch.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-workflow.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-params.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-event-log.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-measurement.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-tcb.c',
+      crypto,
+      hwcore,
+      migration,
+      qom,
+    ],
     'test-tpm-platform': [
       meson.project_source_root() / 'backends/tpm/tpm_platform.c',
       meson.project_source_root() / 'hw/arm/virt-drtm-tpm-frontend.c',

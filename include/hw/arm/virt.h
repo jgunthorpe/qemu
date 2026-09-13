@@ -38,6 +38,7 @@
 #include "hw/arm/bsa.h"
 #include "hw/block/flash.h"
 #include "hw/cxl/cxl.h"
+#include "hw/arm/virt-drtm.h"
 #include "system/kvm.h"
 #include "hw/intc/arm_gicv3_common.h"
 #include "qom/object.h"
@@ -211,6 +212,7 @@ struct VirtMachineState {
     MemoryRegion *secure_sysmem;
     bool pci_preserve_config;
     GPtrArray *smmuv3_devices;
+    VirtDRTMState drtm_state;
 };
 
 #define VIRT_ECAM_ID(high) (high ? VIRT_HIGH_PCIE_ECAM : VIRT_PCIE_ECAM)

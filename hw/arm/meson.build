@@ -12,6 +12,8 @@ arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files(
   'virt-drtm-tpm-frontend.c',
   'virt-drtm-workflow.c',
   'virt-drtm-params.c',
+  'virt-drtm-service-launch.c',
+  'virt-drtm-service-launch-core.c',
 ))
 arm_common_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
 arm_common_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic_boards.c'))
