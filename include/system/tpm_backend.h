@@ -80,6 +80,11 @@ struct TPMBackendClass {
     TpmTypeOptions *(*get_tpm_options)(TPMBackend *t);
 
     void (*handle_request)(TPMBackend *s, TPMBackendCmd *cmd, Error **errp);
+
+    /* Optional PTP HASH_* control path used by firmware DRTM. */
+    bool (*drtm_hash)(TPMBackend *s, TPMBackendDRTMHashOperation operation,
+                      const uint8_t *data, size_t data_size, Error **errp);
+    bool (*supports_drtm_hash)(TPMBackend *s);
 };
 
 /**
@@ -189,6 +194,12 @@ TPMVersion tpm_backend_get_tpm_version(TPMBackend *s);
  * Returns buffer size.
  */
 size_t tpm_backend_get_buffer_size(TPMBackend *s);
+
+bool tpm_backend_drtm_hash(TPMBackend *s,
+                           TPMBackendDRTMHashOperation operation,
+                           const uint8_t *data, size_t data_size,
+                           Error **errp);
+bool tpm_backend_supports_drtm_hash(TPMBackend *s);
 
 /**
  * tpm_backend_finish_sync:

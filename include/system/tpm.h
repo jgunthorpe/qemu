@@ -15,6 +15,12 @@
 #include "qapi/qapi-types-tpm.h"
 #include "qom/object.h"
 
+typedef enum TPMBackendDRTMHashOperation {
+    TPM_BACKEND_DRTM_HASH_START,
+    TPM_BACKEND_DRTM_HASH_DATA,
+    TPM_BACKEND_DRTM_HASH_END,
+} TPMBackendDRTMHashOperation;
+
 #ifdef CONFIG_TPM
 
 int tpm_config_parse(QemuOptsList *opts_list, const char *optstr);
@@ -62,6 +68,8 @@ struct TPMIfClass {
                                 TPMDRTMLocalityCloseResult *result,
                                 Error **errp);
     bool (*drtm_activate_locality2)(TPMIf *obj, Error **errp);
+    bool (*drtm_hash)(TPMIf *obj, TPMBackendDRTMHashOperation operation,
+                      const uint8_t *data, size_t data_size, Error **errp);
     bool ppi_enabled;
 };
 
@@ -106,6 +114,8 @@ bool tpm_drtm_close_locality(TPMIf *ti, uint8_t locality,
                              TPMDRTMLocalityCloseResult *result,
                              Error **errp);
 bool tpm_drtm_activate_locality2(TPMIf *ti, Error **errp);
+bool tpm_drtm_hash(TPMIf *ti, TPMBackendDRTMHashOperation operation,
+                   const uint8_t *data, size_t data_size, Error **errp);
 
 #define TYPE_TPM_TIS_ISA            "tpm-tis"
 #define TYPE_TPM_TIS_SYSBUS         "tpm-tis-device"

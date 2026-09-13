@@ -193,6 +193,34 @@ size_t tpm_backend_get_buffer_size(TPMBackend *s)
     return k->get_buffer_size(s);
 }
 
+bool tpm_backend_drtm_hash(TPMBackend *s,
+                           TPMBackendDRTMHashOperation operation,
+                           const uint8_t *data, size_t data_size,
+                           Error **errp)
+{
+    TPMBackendClass *k = TPM_BACKEND_GET_CLASS(s);
+
+    if (operation > TPM_BACKEND_DRTM_HASH_END ||
+        (operation == TPM_BACKEND_DRTM_HASH_DATA &&
+         (!data || !data_size)) ||
+        (operation != TPM_BACKEND_DRTM_HASH_DATA && data_size)) {
+        error_setg(errp, "invalid PTP hash operation");
+        return false;
+    }
+    if (!k->drtm_hash) {
+        error_setg(errp, "TPM backend does not support PTP hashing");
+        return false;
+    }
+    return k->drtm_hash(s, operation, data, data_size, errp);
+}
+
+bool tpm_backend_supports_drtm_hash(TPMBackend *s)
+{
+    TPMBackendClass *k = TPM_BACKEND_GET_CLASS(s);
+
+    return k->supports_drtm_hash && k->supports_drtm_hash(s);
+}
+
 TPMInfo *tpm_backend_query_tpm(TPMBackend *s)
 {
     TPMInfo *info = g_new0(TPMInfo, 1);

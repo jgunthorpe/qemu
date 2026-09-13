@@ -82,6 +82,7 @@ typedef struct TPMState {
     /* Arm DRTM mediation is opt-in and only applies to tpm-tis-device. */
     bool drtm_enabled;
     uint8_t drtm_closed_localities;
+    uint8_t drtm_hash_state;
 
     TPMBackend *be_driver;
     TPMVersion be_tpm_version;
@@ -113,6 +114,9 @@ bool tpm_tis_drtm_close_locality(TPMState *s, uint8_t locality,
                                  TPMDRTMLocalityCloseResult *result,
                                  Error **errp);
 bool tpm_tis_drtm_activate_locality2(TPMState *s, Error **errp);
+bool tpm_tis_drtm_hash(TPMState *s,
+                       TPMBackendDRTMHashOperation operation,
+                       const uint8_t *data, size_t data_size, Error **errp);
 uint32_t tpm_tis_read_data(TPMState *s, hwaddr addr, unsigned size);
 void tpm_tis_write_data(TPMState *s, hwaddr addr, uint64_t val, uint32_t size);
 uint16_t tpm_tis_get_checksum(TPMState *s);

@@ -259,6 +259,71 @@ static int tpm_emulator_set_locality(TPMEmulator *tpm_emu, uint8_t locty_number,
     return 0;
 }
 
+static bool tpm_emulator_drtm_hash(TPMBackend *tb,
+                                   TPMBackendDRTMHashOperation operation,
+                                   const uint8_t *data, size_t data_size,
+                                   Error **errp)
+{
+    TPMEmulator *tpm_emu = TPM_EMULATOR(tb);
+    ptm_hdata hdata = { };
+    ptm_res res = 0;
+    unsigned int command;
+    void *message = &res;
+    size_t request_size = 0;
+
+    if (!TPM_EMULATOR_IMPLEMENTS_ALL_CAPS(tpm_emu, PTM_CAP_HASHING)) {
+        error_setg(errp, "tpm-emulator: PTP hashing is not supported");
+        return false;
+    }
+    if (tpm_emulator_set_locality(tpm_emu, 4, errp) < 0) {
+        return false;
+    }
+
+    switch (operation) {
+    case TPM_BACKEND_DRTM_HASH_START:
+        command = CMD_HASH_START;
+        break;
+    case TPM_BACKEND_DRTM_HASH_DATA:
+        if (data_size > sizeof(hdata.u.req.data)) {
+            error_setg(errp, "tpm-emulator: PTP hash data is too large");
+            return false;
+        }
+        hdata.u.req.length = cpu_to_be32(data_size);
+        memcpy(hdata.u.req.data, data, data_size);
+        command = CMD_HASH_DATA;
+        message = &hdata;
+        request_size = sizeof(hdata.u.req.length) + data_size;
+        break;
+    case TPM_BACKEND_DRTM_HASH_END:
+        command = CMD_HASH_END;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    if (tpm_emulator_ctrlcmd(tpm_emu, command, message, request_size,
+                             sizeof(res), sizeof(res)) < 0) {
+        error_setg(errp, "tpm-emulator: PTP hash control command failed");
+        return false;
+    }
+    memcpy(&res, message, sizeof(res));
+    res = be32_to_cpu(res);
+    if (res) {
+        error_setg(errp, "tpm-emulator: PTP hash returned 0x%x %s",
+                   res, tpm_emulator_strerror(res));
+        return false;
+    }
+    return true;
+}
+
+static bool tpm_emulator_supports_drtm_hash(TPMBackend *tb)
+{
+    TPMEmulator *tpm_emu = TPM_EMULATOR(tb);
+
+    return tpm_emu->tpm_version == TPM_VERSION_2_0 &&
+           TPM_EMULATOR_IMPLEMENTS_ALL_CAPS(tpm_emu, PTM_CAP_HASHING);
+}
+
 static void tpm_emulator_handle_request(TPMBackend *tb, TPMBackendCmd *cmd,
                                         Error **errp)
 {
@@ -1103,6 +1168,8 @@ static void tpm_emulator_class_init(ObjectClass *klass, const void *data)
     tbc->get_tpm_options = tpm_emulator_get_tpm_options;
 
     tbc->handle_request = tpm_emulator_handle_request;
+    tbc->drtm_hash = tpm_emulator_drtm_hash;
+    tbc->supports_drtm_hash = tpm_emulator_supports_drtm_hash;
 }
 
 static const TypeInfo tpm_emulator_info = {

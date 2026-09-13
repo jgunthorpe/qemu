@@ -7,6 +7,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
+#include "hw/arm/virt-drtm-tpm.h"
 #include "system/tpm.h"
 #include "system/tpm_util.h"
 
@@ -23,11 +24,17 @@ struct TestTPM {
     uint32_t response_code;
     unsigned int calls;
     uint8_t locality;
+    uint8_t command_localities[64];
     bool drtm_enabled;
     bool no_active;
     bool localities_open;
     TPMDRTMLocalityCloseResult close_result;
     bool locality2_active;
+    unsigned int hash_calls;
+    TPMBackendDRTMHashOperation hash_operation;
+    size_t hash_size;
+    size_t fail_hash_call;
+    TPMBackendDRTMHashOperation hash_operations[3];
 };
 
 static enum TPMVersion test_tpm_get_version(TPMIf *ti)
@@ -42,7 +49,8 @@ static bool test_tpm_deliver(TPMIf *ti, uint8_t locality,
 {
     TestTPM *s = TEST_TPM(ti);
 
-    s->calls++;
+    g_assert_cmpuint(s->calls, <, G_N_ELEMENTS(s->command_localities));
+    s->command_localities[s->calls++] = locality;
     s->locality = locality;
     if (s->fail_transport) {
         return false;
@@ -52,6 +60,9 @@ static bool test_tpm_deliver(TPMIf *ti, uint8_t locality,
     tpm_cmd_set_tag(response, s->response_tag);
     stl_be_p(response + 2, s->response_size);
     stl_be_p(response + 6, s->response_code);
+    if (s->response_tag == 0x8002 && s->response_size == 19) {
+        response[16] = 0x01;
+    }
     *response_size = s->actual_size;
     return true;
 }
@@ -91,6 +102,24 @@ static bool test_tpm_activate_locality2(TPMIf *ti, Error **errp)
     return true;
 }
 
+static bool test_tpm_hash(TPMIf *ti, TPMBackendDRTMHashOperation operation,
+                          const uint8_t *data, size_t data_size, Error **errp)
+{
+    TestTPM *s = TEST_TPM(ti);
+    size_t call = s->hash_calls;
+
+    g_assert_cmpuint(call, <, G_N_ELEMENTS(s->hash_operations));
+    s->hash_calls++;
+    s->hash_operations[call] = operation;
+    s->hash_operation = operation;
+    s->hash_size = data_size;
+    if (call == s->fail_hash_call) {
+        error_setg(errp, "injected DRTM hash transport failure");
+        return false;
+    }
+    return true;
+}
+
 static void test_tpm_iface_init(ObjectClass *klass, const void *data)
 {
     TPMIfClass *tc = TPM_IF_CLASS(klass);
@@ -102,6 +131,7 @@ static void test_tpm_iface_init(ObjectClass *klass, const void *data)
     tc->drtm_open_localities = test_tpm_open_localities;
     tc->drtm_close_locality = test_tpm_close_locality;
     tc->drtm_activate_locality2 = test_tpm_activate_locality2;
+    tc->drtm_hash = test_tpm_hash;
 }
 
 static const TypeInfo test_tpm_info = {
@@ -129,7 +159,27 @@ static TestTPM *test_tpm_new(void)
     s->response_tag = 0x8001;
     s->response_size = 10;
     s->actual_size = 10;
+    s->fail_hash_call = SIZE_MAX;
     return s;
+}
+
+static VirtDRTMMeasurementManifest *test_drtm_manifest(void)
+{
+    static const uint16_t banks[] = {
+        VIRT_DRTM_TPM_ALG_SHA1, VIRT_DRTM_TPM_ALG_SHA256,
+    };
+    static const uint8_t dlme[] = { 0x11, 0x22, 0x33 };
+    VirtDRTMEventLogInput input = {
+        .active_banks = banks,
+        .active_bank_count = G_N_ELEMENTS(banks),
+        .pcr_schema_value = 1,
+        .dlme_image = { dlme, sizeof(dlme) },
+    };
+    VirtDRTMMeasurementManifest *manifest = NULL;
+
+    g_assert_cmpint(virt_drtm_measurement_manifest_build(&input, &manifest),
+                    ==, VIRT_DRTM_EVENT_LOG_OK);
+    return manifest;
 }
 
 static void make_request(uint8_t request[10])
@@ -156,6 +206,27 @@ static void test_valid(void)
     g_assert_cmpuint(s->locality, ==, 2);
     g_assert_cmpuint(response_size, ==, 10);
     g_assert_cmphex(response_code, ==, 0);
+}
+
+static void test_drtm_hash(void)
+{
+    g_autoptr(TestTPM) s = test_tpm_new();
+    uint8_t digest[32] = { };
+    Error *err = NULL;
+
+    g_assert_true(tpm_drtm_hash(TPM_IF(s), TPM_BACKEND_DRTM_HASH_START,
+                                NULL, 0, &error_abort));
+    g_assert_true(tpm_drtm_hash(TPM_IF(s), TPM_BACKEND_DRTM_HASH_DATA,
+                                digest, sizeof(digest), &error_abort));
+    g_assert_cmpuint(s->hash_calls, ==, 2);
+    g_assert_cmpint(s->hash_operation, ==, TPM_BACKEND_DRTM_HASH_DATA);
+    g_assert_cmpuint(s->hash_size, ==, sizeof(digest));
+
+    g_assert_false(tpm_drtm_hash(TPM_IF(s), TPM_BACKEND_DRTM_HASH_DATA,
+                                 NULL, sizeof(digest), &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(s->hash_calls, ==, 2);
 }
 
 static void test_tpm_error_is_a_response(void)
@@ -294,6 +365,81 @@ static void test_drtm_locality_frontend(void)
     error_free(err);
 }
 
+static void test_drtm_staged_measurement_frontend(void)
+{
+    g_autoptr(TestTPM) s = test_tpm_new();
+    VirtDRTMMeasurementManifest *manifest = test_drtm_manifest();
+    VirtDRTMTPMFrontendExecution frontend;
+    VirtDRTMTPMResult result;
+    size_t dce_operation =
+        virt_drtm_measurement_manifest_dce_operation(manifest);
+    size_t operation_count =
+        virt_drtm_measurement_manifest_operation_count(manifest);
+
+    s->response_tag = 0x8002;
+    s->response_size = 19;
+    s->actual_size = 19;
+    g_assert_true(virt_drtm_tpm_frontend_execution_init(
+        &frontend, manifest, TPM_IF(s), &error_abort));
+    g_assert_cmpuint(s->hash_calls, ==, 0);
+    g_assert_cmpuint(s->calls, ==, 0);
+
+    result = virt_drtm_tpm_frontend_execute_hash(&frontend, &error_abort);
+    g_assert_cmpint(result.status, ==, VIRT_DRTM_TPM_OK);
+    g_assert_cmpuint(s->hash_calls, ==, 3);
+    for (size_t i = 0; i < 3; i++) {
+        g_assert_cmpint(s->hash_operations[i], ==,
+                        TPM_BACKEND_DRTM_HASH_START + i);
+    }
+    result = virt_drtm_tpm_frontend_execute_dcrtm_extends(
+        &frontend, &error_abort);
+    g_assert_cmpint(result.status, ==, VIRT_DRTM_TPM_OK);
+    g_assert_cmpuint(s->calls, ==, dce_operation - 3);
+    result = virt_drtm_tpm_frontend_execute_dce_extends(
+        &frontend, &error_abort);
+    g_assert_cmpint(result.status, ==, VIRT_DRTM_TPM_OK);
+    g_assert_cmpuint(s->calls, ==, operation_count - 3);
+    for (size_t i = 0; i < s->calls; i++) {
+        g_assert_cmpuint(s->command_localities[i], ==, 3);
+    }
+    virt_drtm_measurement_manifest_free(manifest);
+}
+
+static void test_drtm_staged_frontend_poison(void)
+{
+    g_autoptr(TestTPM) s = test_tpm_new();
+    VirtDRTMMeasurementManifest *manifest = test_drtm_manifest();
+    VirtDRTMTPMFrontendExecution frontend;
+    VirtDRTMTPMResult result;
+    Error *err = NULL;
+    unsigned int failed_calls;
+
+    s->response_tag = 0x8002;
+    s->response_size = 19;
+    s->actual_size = 19;
+    g_assert_true(virt_drtm_tpm_frontend_execution_init(
+        &frontend, manifest, TPM_IF(s), &error_abort));
+    result = virt_drtm_tpm_frontend_execute_hash(&frontend, &error_abort);
+    g_assert_cmpint(result.status, ==, VIRT_DRTM_TPM_OK);
+
+    s->fail_transport = true;
+    result = virt_drtm_tpm_frontend_execute_dcrtm_extends(&frontend, &err);
+    g_assert_cmpint(result.status, ==, VIRT_DRTM_TPM_TRANSPORT_ERROR);
+    g_assert_true(result.irreversible);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    failed_calls = s->calls;
+
+    s->fail_transport = false;
+    result = virt_drtm_tpm_frontend_execute_dcrtm_extends(&frontend, &err);
+    g_assert_cmpint(result.status, ==, VIRT_DRTM_TPM_INVALID);
+    g_assert_cmpuint(s->calls, ==, failed_calls);
+    g_assert_nonnull(err);
+    error_free(err);
+    virt_drtm_measurement_manifest_free(manifest);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -303,12 +449,17 @@ int main(int argc, char **argv)
     rust_bql_mock_lock();
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/tpm-platform/valid", test_valid);
+    g_test_add_func("/tpm-platform/drtm-hash", test_drtm_hash);
     g_test_add_func("/tpm-platform/tpm-error", test_tpm_error_is_a_response);
     g_test_add_func("/tpm-platform/bad-requests", test_bad_requests);
     g_test_add_func("/tpm-platform/bad-responses", test_bad_responses);
     g_test_add_func("/tpm-platform/frontend-failures", test_frontend_failures);
     g_test_add_func("/tpm-platform/drtm-localities",
                     test_drtm_locality_frontend);
+    g_test_add_func("/tpm-platform/drtm-staged-measurement",
+                    test_drtm_staged_measurement_frontend);
+    g_test_add_func("/tpm-platform/drtm-staged-poison",
+                    test_drtm_staged_frontend_poison);
     g_test_add_func("/tpm-platform/drtm-unsupported",
                     test_drtm_unsupported_frontend);
     /* Unit tests run without vl.c's main-loop BQL setup. */

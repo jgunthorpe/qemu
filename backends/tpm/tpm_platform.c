@@ -124,6 +124,30 @@ bool tpm_drtm_activate_locality2(TPMIf *ti, Error **errp)
     return tc->drtm_activate_locality2(ti, errp);
 }
 
+bool tpm_drtm_hash(TPMIf *ti, TPMBackendDRTMHashOperation operation,
+                   const uint8_t *data, size_t data_size, Error **errp)
+{
+    TPMIfClass *tc;
+
+    g_assert(bql_locked());
+    if (operation > TPM_BACKEND_DRTM_HASH_END ||
+        (operation == TPM_BACKEND_DRTM_HASH_DATA &&
+         (!data || !data_size)) ||
+        (operation != TPM_BACKEND_DRTM_HASH_DATA && data_size)) {
+        error_setg(errp, "invalid PTP hash operation");
+        return false;
+    }
+    tc = tpm_drtm_frontend(ti, errp);
+    if (!tc) {
+        return false;
+    }
+    if (!tc->drtm_hash) {
+        error_setg(errp, "TPM frontend does not support PTP hashing");
+        return false;
+    }
+    return tc->drtm_hash(ti, operation, data, data_size, errp);
+}
+
 bool tpm_deliver_platform_request(TPMIf *ti, uint8_t locality,
                                   const uint8_t *request,
                                   size_t request_size,

@@ -121,6 +121,15 @@ static bool tpm_tis_sysbus_drtm_activate_locality2(TPMIf *ti, Error **errp)
     return tpm_tis_drtm_activate_locality2(&TPM_TIS_SYSBUS(ti)->state, errp);
 }
 
+static bool tpm_tis_sysbus_drtm_hash(TPMIf *ti,
+                                     TPMBackendDRTMHashOperation operation,
+                                     const uint8_t *data, size_t data_size,
+                                     Error **errp)
+{
+    return tpm_tis_drtm_hash(&TPM_TIS_SYSBUS(ti)->state, operation,
+                             data, data_size, errp);
+}
+
 static enum TPMVersion tpm_tis_sysbus_get_tpm_version(TPMIf *ti)
 {
     TPMStateSysBus *sbdev = TPM_TIS_SYSBUS(ti);
@@ -203,6 +212,7 @@ static void tpm_tis_sysbus_class_init(ObjectClass *klass, const void *data)
     tc->drtm_close_locality = tpm_tis_sysbus_drtm_close_locality;
     tc->drtm_activate_locality2 =
         tpm_tis_sysbus_drtm_activate_locality2;
+    tc->drtm_hash = tpm_tis_sysbus_drtm_hash;
     tc->get_version = tpm_tis_sysbus_get_tpm_version;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }

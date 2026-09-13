@@ -15,6 +15,8 @@ static bool test_timeout;
 static unsigned int test_cancels;
 static uint32_t test_platform_response_size;
 static int test_irq_level;
+static unsigned int test_hash_calls;
+static TPMBackendDRTMHashOperation test_hash_operation;
 
 static void test_irq_handler(void *opaque, int n, int level)
 {
@@ -91,6 +93,21 @@ void tpm_backend_reset(TPMBackend *be)
 {
 }
 
+bool tpm_backend_drtm_hash(TPMBackend *be,
+                           TPMBackendDRTMHashOperation operation,
+                           const uint8_t *data, size_t data_size,
+                           Error **errp)
+{
+    test_hash_calls++;
+    test_hash_operation = operation;
+    return true;
+}
+
+bool tpm_backend_supports_drtm_hash(TPMBackend *be)
+{
+    return true;
+}
+
 int tpm_backend_startup_tpm(TPMBackend *be, size_t buffer_size)
 {
     return 0;
@@ -132,6 +149,7 @@ static void setup_state(TPMState *s, TPMBackend *be)
     test_timeout = false;
     test_cancels = 0;
     test_platform_response_size = 10;
+    test_hash_calls = 0;
 }
 
 static void test_drtm_enable_and_guest_access(void)
@@ -377,6 +395,64 @@ static void test_drtm_closed_platform_command(void)
     g_assert_cmpuint(test_deliveries, ==, 1);
 }
 
+static void test_drtm_hash_sequence(void)
+{
+    TPMState s;
+    TPMBackend be = { };
+    uint8_t digest[32] = { };
+    uint8_t request[10], response[10];
+    size_t response_size = sizeof(response);
+    bool no_active;
+    Error *err = NULL;
+
+    setup_state(&s, &be);
+    g_assert_true(tpm_tis_enable_drtm(&s, &error_abort));
+    g_assert_false(tpm_tis_drtm_hash(&s, TPM_BACKEND_DRTM_HASH_DATA,
+                                     digest, sizeof(digest), &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(test_hash_calls, ==, 0);
+
+    g_assert_true(tpm_tis_drtm_hash(&s, TPM_BACKEND_DRTM_HASH_START,
+                                    NULL, 0, &error_abort));
+    g_assert_cmpuint(s.drtm_hash_state, ==, 1);
+    g_assert_cmpint(test_hash_operation, ==, TPM_BACKEND_DRTM_HASH_START);
+
+    make_command(request);
+    err = NULL;
+    g_assert_false(tpm_tis_deliver_platform_request(
+        &s, 4, request, sizeof(request), response, &response_size, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(test_deliveries, ==, 0);
+    g_assert_true(tpm_tis_drtm_no_active_locality(&s, &no_active,
+                                                  &error_abort));
+    g_assert_false(no_active);
+    tpm_tis_write_data(&s, TPM_TIS_REG_ACCESS,
+                       TPM_TIS_ACCESS_REQUEST_USE, 1);
+    g_assert_cmpuint(s.active_locty, ==, TPM_TIS_NO_LOCALITY);
+
+    err = NULL;
+    g_assert_false(tpm_tis_drtm_hash(&s, TPM_BACKEND_DRTM_HASH_END,
+                                     NULL, 0, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(test_hash_calls, ==, 1);
+    g_assert_true(tpm_tis_drtm_hash(&s, TPM_BACKEND_DRTM_HASH_DATA,
+                                    digest, sizeof(digest), &error_abort));
+    g_assert_true(tpm_tis_drtm_hash(&s, TPM_BACKEND_DRTM_HASH_END,
+                                    NULL, 0, &error_abort));
+    g_assert_cmpuint(s.drtm_hash_state, ==, 0);
+    g_assert_cmpuint(test_hash_calls, ==, 3);
+
+    s.active_locty = 0;
+    err = NULL;
+    g_assert_false(tpm_tis_drtm_hash(&s, TPM_BACKEND_DRTM_HASH_START,
+                                     NULL, 0, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+}
+
 static void test_guest_then_platform(void)
 {
     TPMState s;
@@ -566,6 +642,8 @@ int main(int argc, char **argv)
                     test_drtm_close_reconciles_irq);
     g_test_add_func("/tpm-tis-platform/drtm-closed-platform-command",
                     test_drtm_closed_platform_command);
+    g_test_add_func("/tpm-tis-platform/drtm-hash-sequence",
+                    test_drtm_hash_sequence);
     ret = g_test_run();
     return ret;
 }

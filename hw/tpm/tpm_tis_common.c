@@ -71,8 +71,8 @@ static bool tpm_tis_drtm_locality_closed(TPMState *s, uint8_t locty)
 
 static bool tpm_tis_guest_locality_blocked(TPMState *s, uint8_t locty)
 {
-    return s->drtm_enabled &&
-           (locty == 4 || tpm_tis_drtm_locality_closed(s, locty));
+    return s->drtm_enabled && (s->drtm_hash_state ||
+           (locty == 4 || tpm_tis_drtm_locality_closed(s, locty)));
 }
 
 static void tpm_tis_zero_closed_locality_buffers(TPMState *s);
@@ -355,6 +355,10 @@ bool tpm_tis_deliver_platform_request(TPMState *s, uint8_t locality,
 
     g_assert(bql_locked());
 
+    if (s->drtm_hash_state) {
+        error_setg(errp, "PTP hash sequence owns the TPM");
+        return false;
+    }
     if (tpm_tis_drtm_locality_closed(s, locality)) {
         error_setg(errp, "TPM locality %u is closed", locality);
         return false;
@@ -435,6 +439,10 @@ bool tpm_tis_enable_drtm(TPMState *s, Error **errp)
         error_setg(errp, "DRTM localities require a TPM 2 backend");
         return false;
     }
+    if (!tpm_backend_supports_drtm_hash(s->be_driver)) {
+        error_setg(errp, "TPM backend does not support PTP hashing");
+        return false;
+    }
     if (TPM_TIS_IS_VALID_LOCTY(s->active_locty) ||
         s->platform_cmd_active || tpm_tis_guest_transaction_busy(s)) {
         error_setg(errp, "cannot enable DRTM with an active TPM locality");
@@ -442,6 +450,7 @@ bool tpm_tis_enable_drtm(TPMState *s, Error **errp)
     }
 
     s->drtm_enabled = true;
+    s->drtm_hash_state = 0;
     s->drtm_closed_localities = TPM_TIS_DRTM_DYNAMIC_LOCALITIES;
     for (locality = 1; locality <= 3; locality++) {
         s->loc[locality].access = TPM_TIS_ACCESS_TPM_REG_VALID_STS;
@@ -465,7 +474,8 @@ bool tpm_tis_drtm_no_active_locality(TPMState *s, bool *no_active,
     }
     *no_active = !TPM_TIS_IS_VALID_LOCTY(s->active_locty) &&
                  !s->platform_cmd_active &&
-                 !tpm_tis_guest_transaction_busy(s);
+                 !tpm_tis_guest_transaction_busy(s) &&
+                 !s->drtm_hash_state;
     return true;
 }
 
@@ -522,6 +532,10 @@ bool tpm_tis_drtm_close_locality(TPMState *s, uint8_t locality,
         error_setg(errp, "a TPM platform command is still pending");
         return false;
     }
+    if (s->drtm_hash_state) {
+        error_setg(errp, "PTP hash sequence owns the TPM");
+        return false;
+    }
     if (tpm_tis_drtm_locality_closed(s, locality)) {
         *result = TPM_DRTM_LOCALITY_ALREADY_CLOSED;
         return true;
@@ -561,12 +575,50 @@ bool tpm_tis_drtm_activate_locality2(TPMState *s, Error **errp)
         return false;
     }
     if (TPM_TIS_IS_VALID_LOCTY(s->active_locty) ||
-        s->platform_cmd_active || tpm_tis_guest_transaction_busy(s)) {
+        s->platform_cmd_active || tpm_tis_guest_transaction_busy(s) ||
+        s->drtm_hash_state) {
         error_setg(errp, "cannot activate TPM locality 2 while one is active");
         return false;
     }
 
     tpm_tis_new_active_locality(s, 2);
+    return true;
+}
+
+bool tpm_tis_drtm_hash(TPMState *s,
+                       TPMBackendDRTMHashOperation operation,
+                       const uint8_t *data, size_t data_size, Error **errp)
+{
+    g_assert(bql_locked());
+
+    if (!s->drtm_enabled) {
+        error_setg(errp, "TPM DRTM locality mediation is disabled");
+        return false;
+    }
+    if (TPM_TIS_IS_VALID_LOCTY(s->active_locty) ||
+        s->platform_cmd_active || tpm_tis_guest_transaction_busy(s)) {
+        error_setg(errp, "cannot use PTP hashing with active TPM traffic");
+        return false;
+    }
+
+    if ((operation == TPM_BACKEND_DRTM_HASH_START && s->drtm_hash_state != 0) ||
+        (operation == TPM_BACKEND_DRTM_HASH_DATA &&
+         s->drtm_hash_state != 1 && s->drtm_hash_state != 2) ||
+        (operation == TPM_BACKEND_DRTM_HASH_END && s->drtm_hash_state != 2)) {
+        error_setg(errp, "invalid PTP hash sequence");
+        return false;
+    }
+    if (!tpm_backend_drtm_hash(s->be_driver, operation, data, data_size,
+                               errp)) {
+        return false;
+    }
+    if (operation == TPM_BACKEND_DRTM_HASH_START) {
+        s->drtm_hash_state = 1;
+    } else if (operation == TPM_BACKEND_DRTM_HASH_DATA) {
+        s->drtm_hash_state = 2;
+    } else if (operation == TPM_BACKEND_DRTM_HASH_END) {
+        s->drtm_hash_state = 0;
+    }
     return true;
 }
 
@@ -798,6 +850,9 @@ static void tpm_tis_mmio_write(void *opaque, hwaddr addr,
 
     trace_tpm_tis_mmio_write(size, addr, val);
 
+    if (s->drtm_hash_state) {
+        return;
+    }
     if (locty == 4) {
         trace_tpm_tis_mmio_write_locty4();
         return;
@@ -1161,6 +1216,7 @@ void tpm_tis_reset(TPMState *s, bool ppi_enabled)
 
     if (s->drtm_enabled) {
         s->drtm_closed_localities = TPM_TIS_DRTM_DYNAMIC_LOCALITIES;
+        s->drtm_hash_state = 0;
         memset(s->buffer, 0, sizeof(s->buffer));
         memset(s->platform_request, 0, sizeof(s->platform_request));
         memset(s->platform_response, 0, sizeof(s->platform_response));

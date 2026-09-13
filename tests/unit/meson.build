@@ -69,12 +69,35 @@ tests = {
     meson.project_source_root() / 'hw/arm/virt-drtm-tcb.c',
     meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
   ],
+  'test-virt-drtm-tpm': [
+    meson.project_source_root() / 'hw/arm/virt-drtm-tpm.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-measurement.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-event-log.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
+    crypto,
+  ],
+  'test-virt-drtm-tpm-banks': [
+    meson.project_source_root() / 'hw/arm/virt-drtm-tpm-banks.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-tcb.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-measurement.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-event-log.c',
+    meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
+    crypto,
+  ],
 }
 
 if have_tpm
   tests += {
     'test-tpm-platform': [
       meson.project_source_root() / 'backends/tpm/tpm_platform.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-tpm-frontend.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-tpm.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-tpm-banks.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-tcb.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-measurement.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-event-log.c',
+      meson.project_source_root() / 'hw/arm/virt-drtm-data.c',
+      crypto,
       qom,
     ],
     'test-tpm-tis-platform': [
