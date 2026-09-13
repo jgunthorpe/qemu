@@ -56,6 +56,9 @@ tests = {
   'test-virt-drtm-params': [
     meson.project_source_root() / 'hw/arm/virt-drtm-params.c'
   ],
+  'test-virt-drtm-data': [
+    meson.project_source_root() / 'hw/arm/virt-drtm-data.c'
+  ],
 }
 
 if have_system or have_tools
