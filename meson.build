@@ -4404,6 +4404,22 @@ foreach target : target_dirs
                  c_args: c_args,
                  build_by_default: false)
 
+  if target == 'aarch64-softmmu'
+    arm_drtm_entry_test = executable(
+      'test-arm-drtm-entry-target',
+      files('tests/unit/test-arm-drtm-entry.c'),
+      genh,
+      c_args: c_args,
+      dependencies: arch_deps + [target_stubs],
+      objects: lib.extract_all_objects(recursive: true),
+      include_directories: target_inc,
+      build_by_default: false)
+    test('test-arm-drtm-entry-target', arm_drtm_entry_test,
+         args: ['--tap', '-k'],
+         protocol: 'tap',
+         suite: ['unit', 'aarch64-softmmu'])
+  endif
+
   if target.endswith('-softmmu')
     execs = [{
       'name': 'qemu-system-' + target_name,

@@ -30,6 +30,7 @@ arm_common_user_system_ss.add(when: 'TARGET_AARCH64', if_true: files(
 
 arm_common_system_ss.add(files(
   'arm-qmp-cmds.c',
+  'drtm.c',
   'firmware-smc.c',
   'firmware-smc-registry.c',
 ))
