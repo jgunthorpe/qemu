@@ -34,6 +34,7 @@
 #define TPM_TIS_IS_VALID_LOCTY(x)   ((x) < TPM_TIS_NUM_LOCALITIES)
 
 #define TPM_TIS_BUFFER_MAX          4096
+#define TPM_TIS_PLATFORM_TIMEOUT_MS 30000
 
 typedef enum {
     TPM_TIS_STATE_IDLE = 0,
@@ -70,6 +71,18 @@ typedef struct TPMState {
 
     TPMBackendCmd cmd;
 
+    /* Persistent storage for a synchronous platform/firmware transaction. */
+    TPMBackendCmd platform_cmd;
+    uint8_t platform_request[TPM_TIS_BUFFER_MAX];
+    uint8_t platform_response[TPM_TIS_BUFFER_MAX];
+    bool platform_cmd_active;
+    bool guest_cmd_queued;
+    int platform_cmd_ret;
+
+    /* Arm DRTM mediation is opt-in and only applies to tpm-tis-device. */
+    bool drtm_enabled;
+    uint8_t drtm_closed_localities;
+
     TPMBackend *be_driver;
     TPMVersion be_tpm_version;
 
@@ -86,6 +99,20 @@ int tpm_tis_pre_save(TPMState *s);
 void tpm_tis_reset(TPMState *s, bool ppi_enabled);
 enum TPMVersion tpm_tis_get_tpm_version(TPMState *s);
 void tpm_tis_request_completed(TPMState *s, int ret);
+bool tpm_tis_deliver_platform_request(TPMState *s, uint8_t locality,
+                                      const uint8_t *request,
+                                      size_t request_size,
+                                      uint8_t *response,
+                                      size_t *response_size,
+                                      Error **errp);
+bool tpm_tis_enable_drtm(TPMState *s, Error **errp);
+bool tpm_tis_drtm_no_active_locality(TPMState *s, bool *no_active,
+                                     Error **errp);
+bool tpm_tis_drtm_open_localities(TPMState *s, Error **errp);
+bool tpm_tis_drtm_close_locality(TPMState *s, uint8_t locality,
+                                 TPMDRTMLocalityCloseResult *result,
+                                 Error **errp);
+bool tpm_tis_drtm_activate_locality2(TPMState *s, Error **errp);
 uint32_t tpm_tis_read_data(TPMState *s, hwaddr addr, unsigned size);
 void tpm_tis_write_data(TPMState *s, hwaddr addr, uint64_t val, uint32_t size);
 uint16_t tpm_tis_get_checksum(TPMState *s);

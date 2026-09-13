@@ -71,6 +71,20 @@ tests = {
   ],
 }
 
+if have_tpm
+  tests += {
+    'test-tpm-platform': [
+      meson.project_source_root() / 'backends/tpm/tpm_platform.c',
+      qom,
+    ],
+    'test-tpm-tis-platform': [
+      meson.project_source_root() / 'hw/tpm/tpm_tis_common.c',
+      hwcore,
+      migration,
+    ],
+  }
+endif
+
 if have_system or have_tools
   tests += {
     'test-qmp-event': [testqapi],

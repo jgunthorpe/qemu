@@ -21,16 +21,16 @@
 #include "qemu/module.h"
 #include "block/thread-pool.h"
 #include "qemu/error-report.h"
+#include "qemu/timer.h"
 
 static void tpm_backend_request_completed(void *opaque, int ret)
 {
     TPMBackend *s = TPM_BACKEND(opaque);
     TPMIfClass *tic = TPM_IF_GET_CLASS(s->tpmif);
 
-    tic->request_completed(s->tpmif, ret);
-
     /* no need for atomic, as long the BQL is taken */
     s->cmd = NULL;
+    tic->request_completed(s->tpmif, ret);
     object_unref(OBJECT(s));
 }
 
@@ -54,6 +54,38 @@ void tpm_backend_finish_sync(TPMBackend *s)
     while (s->cmd) {
         aio_poll(qemu_get_aio_context(), true);
     }
+}
+
+static void tpm_backend_wait_expired(void *opaque)
+{
+    bool *expired = opaque;
+
+    *expired = true;
+}
+
+bool tpm_backend_finish_sync_timeout(TPMBackend *s, unsigned int timeout_ms)
+{
+    QEMUTimer timer;
+    bool expired = false;
+
+    if (!s->cmd) {
+        return true;
+    }
+
+    timer_init_ms(&timer, QEMU_CLOCK_REALTIME,
+                  tpm_backend_wait_expired, &expired);
+    timer_mod(&timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + timeout_ms);
+    while (s->cmd && !expired) {
+        aio_poll(qemu_get_aio_context(), true);
+    }
+    timer_del(&timer);
+    timer_deinit(&timer);
+
+    if (s->cmd) {
+        tpm_backend_cancel_cmd(s);
+        return false;
+    }
+    return true;
 }
 
 enum TpmType tpm_backend_get_type(TPMBackend *s)

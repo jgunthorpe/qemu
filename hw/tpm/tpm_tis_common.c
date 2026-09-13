@@ -29,6 +29,7 @@
 #include "qemu/bswap.h"
 #include "qemu/crc-ccitt.h"
 #include "qemu/module.h"
+#include "qemu/main-loop.h"
 
 #include "hw/acpi/tpm.h"
 #include "hw/pci/pci_ids.h"
@@ -58,6 +59,52 @@ static uint8_t tpm_tis_locality_from_addr(hwaddr addr)
     assert(TPM_TIS_IS_VALID_LOCTY(locty));
 
     return locty;
+}
+
+#define TPM_TIS_DRTM_DYNAMIC_LOCALITIES ((1U << 1) | (1U << 2) | (1U << 3))
+
+static bool tpm_tis_drtm_locality_closed(TPMState *s, uint8_t locty)
+{
+    return s->drtm_enabled &&
+           (s->drtm_closed_localities & (1U << locty));
+}
+
+static bool tpm_tis_guest_locality_blocked(TPMState *s, uint8_t locty)
+{
+    return s->drtm_enabled &&
+           (locty == 4 || tpm_tis_drtm_locality_closed(s, locty));
+}
+
+static void tpm_tis_zero_closed_locality_buffers(TPMState *s);
+
+static bool tpm_tis_guest_transaction_busy(TPMState *s)
+{
+    unsigned int locality;
+
+    for (locality = 0; locality < TPM_TIS_NUM_LOCALITIES; locality++) {
+        if (s->loc[locality].state == TPM_TIS_STATE_EXECUTION) {
+            return true;
+        }
+    }
+    return s->guest_cmd_queued ||
+           TPM_TIS_IS_VALID_LOCTY(s->aborting_locty) ||
+           TPM_TIS_IS_VALID_LOCTY(s->next_locty);
+}
+
+static void tpm_tis_reconcile_irq(TPMState *s)
+{
+    unsigned int locality;
+
+    for (locality = 0; locality < TPM_TIS_NUM_LOCALITIES; locality++) {
+        if ((s->loc[locality].inte & TPM_TIS_INT_ENABLED) &&
+            (s->loc[locality].inte & s->loc[locality].ints &
+             TPM_TIS_INTERRUPTS_SUPPORTED)) {
+            return;
+        }
+    }
+    if (s->irq) {
+        qemu_irq_lower(s->irq);
+    }
 }
 
 
@@ -101,7 +148,11 @@ static void tpm_tis_tpm_send(TPMState *s, uint8_t locty)
         .out_len = s->be_buffer_size,
     };
 
-    tpm_backend_deliver_request(s->be_driver, &s->cmd);
+    if (s->platform_cmd_active) {
+        s->guest_cmd_queued = true;
+    } else {
+        tpm_backend_deliver_request(s->be_driver, &s->cmd);
+    }
 }
 
 /* raise an interrupt if allowed */
@@ -217,6 +268,12 @@ static void tpm_tis_prep_abort(TPMState *s, uint8_t locty, uint8_t newlocty)
      */
     for (busy_locty = 0; busy_locty < TPM_TIS_NUM_LOCALITIES; busy_locty++) {
         if (s->loc[busy_locty].state == TPM_TIS_STATE_EXECUTION) {
+            if (s->guest_cmd_queued) {
+                /* The queued command never reached the backend. */
+                s->guest_cmd_queued = false;
+                tpm_tis_abort(s);
+                return;
+            }
             /*
              * request the backend to cancel. Some backends may not
              * support it
@@ -234,10 +291,35 @@ static void tpm_tis_prep_abort(TPMState *s, uint8_t locty, uint8_t newlocty)
  */
 void tpm_tis_request_completed(TPMState *s, int ret)
 {
-    uint8_t locty = s->cmd.locty;
+    uint8_t locty;
     uint8_t l;
 
+    if (s->platform_cmd_active) {
+        locty = s->platform_cmd.locty;
+        s->platform_cmd_ret = ret;
+        s->platform_cmd_active = false;
+        s->platform_cmd = (TPMBackendCmd) { };
+        if (tpm_tis_drtm_locality_closed(s, locty)) {
+            memset(s->platform_request, 0, sizeof(s->platform_request));
+            memset(s->platform_response, 0, sizeof(s->platform_response));
+        }
+        if (s->guest_cmd_queued) {
+            s->guest_cmd_queued = false;
+            tpm_backend_deliver_request(s->be_driver, &s->cmd);
+        }
+        return;
+    }
+
+    locty = s->cmd.locty;
     assert(TPM_TIS_IS_VALID_LOCTY(locty));
+
+    if (tpm_tis_drtm_locality_closed(s, locty)) {
+        memset(s->buffer, 0, sizeof(s->buffer));
+        s->rw_offset = 0;
+        s->loc[locty].state = TPM_TIS_STATE_IDLE;
+        tpm_tis_sts_set(&s->loc[locty], 0);
+        return;
+    }
 
     if (s->cmd.selftest_done) {
         for (l = 0; l < TPM_TIS_NUM_LOCALITIES; l++) {
@@ -259,6 +341,233 @@ void tpm_tis_request_completed(TPMState *s, int ret)
 
     tpm_tis_raise_irq(s, locty,
                       TPM_TIS_INT_DATA_AVAILABLE | TPM_TIS_INT_STS_VALID);
+}
+
+bool tpm_tis_deliver_platform_request(TPMState *s, uint8_t locality,
+                                      const uint8_t *request,
+                                      size_t request_size,
+                                      uint8_t *response,
+                                      size_t *response_size,
+                                      Error **errp)
+{
+    size_t response_capacity = *response_size;
+    int ret;
+
+    g_assert(bql_locked());
+
+    if (tpm_tis_drtm_locality_closed(s, locality)) {
+        error_setg(errp, "TPM locality %u is closed", locality);
+        return false;
+    }
+
+    if (tpm_backend_had_startup_error(s->be_driver)) {
+        error_setg(errp, "TPM backend failed to start");
+        return false;
+    }
+    if (request_size > s->be_buffer_size ||
+        s->be_buffer_size < 10) {
+        error_setg(errp, "TPM platform command exceeds backend buffer size");
+        return false;
+    }
+    response_capacity = MIN(response_capacity, s->be_buffer_size);
+
+    /* Complete any guest-owned backend transaction before taking our turn. */
+    if (s->platform_cmd_active) {
+        error_setg(errp, "a TPM platform command is still pending");
+        return false;
+    }
+    if (!tpm_backend_finish_sync_timeout(s->be_driver,
+                                         TPM_TIS_PLATFORM_TIMEOUT_MS)) {
+        error_setg(errp, "timed out waiting for a guest TPM command");
+        return false;
+    }
+    g_assert(!s->platform_cmd_active);
+
+    memcpy(s->platform_request, request, request_size);
+    memset(s->platform_response, 0, response_capacity);
+
+    s->platform_cmd = (TPMBackendCmd) {
+        .locty = locality,
+        .in = s->platform_request,
+        .in_len = request_size,
+        .out = s->platform_response,
+        .out_len = response_capacity,
+    };
+    s->platform_cmd_ret = -1;
+    s->platform_cmd_active = true;
+
+    tpm_backend_deliver_request(s->be_driver, &s->platform_cmd);
+    if (!tpm_backend_finish_sync_timeout(s->be_driver,
+                                         TPM_TIS_PLATFORM_TIMEOUT_MS)) {
+        error_setg(errp, "timed out waiting for TPM platform command");
+        return false;
+    }
+
+    g_assert(!s->platform_cmd_active);
+    ret = s->platform_cmd_ret;
+    if (ret != 0) {
+        error_setg(errp, "TPM backend request failed (%d)", ret);
+        return false;
+    }
+
+    /* The backend API reports the response length in its TPM header. */
+    *response_size = tpm_cmd_get_size(s->platform_response);
+    if (*response_size < 10 || *response_size > response_capacity) {
+        *response_size = 0;
+        error_setg(errp, "TPM backend returned an invalid response size");
+        return false;
+    }
+    memcpy(response, s->platform_response, *response_size);
+    return true;
+}
+
+bool tpm_tis_enable_drtm(TPMState *s, Error **errp)
+{
+    unsigned int locality;
+
+    g_assert(bql_locked());
+
+    if (s->drtm_enabled) {
+        return true;
+    }
+    if (tpm_backend_had_startup_error(s->be_driver) ||
+        tpm_backend_get_tpm_version(s->be_driver) != TPM_VERSION_2_0) {
+        error_setg(errp, "DRTM localities require a TPM 2 backend");
+        return false;
+    }
+    if (TPM_TIS_IS_VALID_LOCTY(s->active_locty) ||
+        s->platform_cmd_active || tpm_tis_guest_transaction_busy(s)) {
+        error_setg(errp, "cannot enable DRTM with an active TPM locality");
+        return false;
+    }
+
+    s->drtm_enabled = true;
+    s->drtm_closed_localities = TPM_TIS_DRTM_DYNAMIC_LOCALITIES;
+    for (locality = 1; locality <= 3; locality++) {
+        s->loc[locality].access = TPM_TIS_ACCESS_TPM_REG_VALID_STS;
+        s->loc[locality].state = TPM_TIS_STATE_IDLE;
+        s->loc[locality].ints = 0;
+        tpm_tis_sts_set(&s->loc[locality], 0);
+    }
+    tpm_tis_reconcile_irq(s);
+    tpm_tis_zero_closed_locality_buffers(s);
+    return true;
+}
+
+bool tpm_tis_drtm_no_active_locality(TPMState *s, bool *no_active,
+                                     Error **errp)
+{
+    g_assert(bql_locked());
+
+    if (!s->drtm_enabled) {
+        error_setg(errp, "TPM DRTM locality mediation is disabled");
+        return false;
+    }
+    *no_active = !TPM_TIS_IS_VALID_LOCTY(s->active_locty) &&
+                 !s->platform_cmd_active &&
+                 !tpm_tis_guest_transaction_busy(s);
+    return true;
+}
+
+bool tpm_tis_drtm_open_localities(TPMState *s, Error **errp)
+{
+    bool no_active;
+
+    g_assert(bql_locked());
+
+    if (!tpm_tis_drtm_no_active_locality(s, &no_active, errp)) {
+        return false;
+    }
+    if (!no_active) {
+        error_setg(errp, "cannot open DRTM localities while one is active");
+        return false;
+    }
+
+    s->drtm_closed_localities &= ~TPM_TIS_DRTM_DYNAMIC_LOCALITIES;
+    return true;
+}
+
+static void tpm_tis_zero_closed_locality_buffers(TPMState *s)
+{
+    /*
+     * TIS has one command/response buffer selected by the active locality.
+     * With no active locality it represents the relinquished locality being
+     * closed.  Platform command buffers are dedicated to dynamic-locality
+     * traffic and can always be scrubbed once no platform command is active.
+     */
+    if (!TPM_TIS_IS_VALID_LOCTY(s->active_locty) &&
+        !tpm_tis_guest_transaction_busy(s)) {
+        memset(s->buffer, 0, sizeof(s->buffer));
+        s->rw_offset = 0;
+    }
+    memset(s->platform_request, 0, sizeof(s->platform_request));
+    memset(s->platform_response, 0, sizeof(s->platform_response));
+}
+
+bool tpm_tis_drtm_close_locality(TPMState *s, uint8_t locality,
+                                 TPMDRTMLocalityCloseResult *result,
+                                 Error **errp)
+{
+    g_assert(bql_locked());
+
+    if (!s->drtm_enabled) {
+        error_setg(errp, "TPM DRTM locality mediation is disabled");
+        return false;
+    }
+    if (locality != 2 && locality != 3) {
+        error_setg(errp, "only TPM localities 2 and 3 can be closed");
+        return false;
+    }
+    if (s->platform_cmd_active) {
+        error_setg(errp, "a TPM platform command is still pending");
+        return false;
+    }
+    if (tpm_tis_drtm_locality_closed(s, locality)) {
+        *result = TPM_DRTM_LOCALITY_ALREADY_CLOSED;
+        return true;
+    }
+    if (s->active_locty == locality ||
+        s->loc[locality].state == TPM_TIS_STATE_EXECUTION ||
+        s->aborting_locty == locality) {
+        *result = TPM_DRTM_LOCALITY_NOT_RELINQUISHED;
+        return true;
+    }
+    if (tpm_tis_guest_transaction_busy(s)) {
+        error_setg(errp, "a guest TPM transaction is still pending");
+        return false;
+    }
+
+    s->drtm_closed_localities |= 1U << locality;
+    s->loc[locality].access = TPM_TIS_ACCESS_TPM_REG_VALID_STS;
+    s->loc[locality].state = TPM_TIS_STATE_IDLE;
+    s->loc[locality].ints = 0;
+    tpm_tis_sts_set(&s->loc[locality], 0);
+    tpm_tis_reconcile_irq(s);
+    tpm_tis_zero_closed_locality_buffers(s);
+    *result = TPM_DRTM_LOCALITY_CLOSED;
+    return true;
+}
+
+bool tpm_tis_drtm_activate_locality2(TPMState *s, Error **errp)
+{
+    g_assert(bql_locked());
+
+    if (!s->drtm_enabled) {
+        error_setg(errp, "TPM DRTM locality mediation is disabled");
+        return false;
+    }
+    if (tpm_tis_drtm_locality_closed(s, 2)) {
+        error_setg(errp, "TPM locality 2 is closed");
+        return false;
+    }
+    if (TPM_TIS_IS_VALID_LOCTY(s->active_locty) ||
+        s->platform_cmd_active || tpm_tis_guest_transaction_busy(s)) {
+        error_setg(errp, "cannot activate TPM locality 2 while one is active");
+        return false;
+    }
+
+    tpm_tis_new_active_locality(s, 2);
+    return true;
 }
 
 /*
@@ -349,6 +658,11 @@ static uint64_t tpm_tis_mmio_read(void *opaque, hwaddr addr,
 
     switch (offset) {
     case TPM_TIS_REG_ACCESS:
+        if (tpm_tis_guest_locality_blocked(s, locty)) {
+            val = TPM_TIS_ACCESS_TPM_REG_VALID_STS |
+                  !tpm_backend_get_tpm_established_flag(s->be_driver);
+            break;
+        }
         /* never show the SEIZE flag even though we use it internally */
         val = s->loc[locty].access & ~TPM_TIS_ACCESS_SEIZE;
         /* the pending flag is always calculated */
@@ -486,6 +800,11 @@ static void tpm_tis_mmio_write(void *opaque, hwaddr addr,
 
     if (locty == 4) {
         trace_tpm_tis_mmio_write_locty4();
+        return;
+    }
+
+    if (tpm_tis_drtm_locality_closed(s, locty) &&
+        off == TPM_TIS_REG_ACCESS) {
         return;
     }
 
@@ -636,6 +955,11 @@ static void tpm_tis_mmio_write(void *opaque, hwaddr addr,
             /* some flags that are only supported for TPM 2 */
             if (val & TPM_TIS_STS_COMMAND_CANCEL) {
                 if (s->loc[locty].state == TPM_TIS_STATE_EXECUTION) {
+                    if (s->guest_cmd_queued) {
+                        trace_tpm_tis_mmio_write_init_abort();
+                        tpm_tis_prep_abort(s, locty, locty);
+                        break;
+                    }
                     /*
                      * request the backend to cancel. Some backends may not
                      * support it
@@ -806,6 +1130,9 @@ enum TPMVersion tpm_tis_get_tpm_version(TPMState *s)
         return TPM_VERSION_UNSPEC;
     }
 
+    if (s->be_tpm_version != TPM_VERSION_UNSPEC) {
+        return s->be_tpm_version;
+    }
     return tpm_backend_get_tpm_version(s->be_driver);
 }
 
@@ -824,11 +1151,20 @@ void tpm_tis_reset(TPMState *s, bool ppi_enabled)
     if (ppi_enabled) {
         tpm_ppi_reset(&s->ppi);
     }
+    /* Never dispatch pre-reset guest work from a late platform callback. */
+    s->guest_cmd_queued = false;
     tpm_backend_reset(s->be_driver);
 
     s->active_locty = TPM_TIS_NO_LOCALITY;
     s->next_locty = TPM_TIS_NO_LOCALITY;
     s->aborting_locty = TPM_TIS_NO_LOCALITY;
+
+    if (s->drtm_enabled) {
+        s->drtm_closed_localities = TPM_TIS_DRTM_DYNAMIC_LOCALITIES;
+        memset(s->buffer, 0, sizeof(s->buffer));
+        memset(s->platform_request, 0, sizeof(s->platform_request));
+        memset(s->platform_response, 0, sizeof(s->platform_response));
+    }
 
     for (c = 0; c < TPM_TIS_NUM_LOCALITIES; c++) {
         s->loc[c].access = TPM_TIS_ACCESS_TPM_REG_VALID_STS;
@@ -851,6 +1187,10 @@ void tpm_tis_reset(TPMState *s, bool ppi_enabled)
         s->rw_offset = 0;
     }
 
+    if (s->drtm_enabled) {
+        tpm_tis_reconcile_irq(s);
+    }
+
     if (tpm_backend_startup_tpm(s->be_driver, s->be_buffer_size) < 0) {
         exit(1);
     }
@@ -871,7 +1211,10 @@ int tpm_tis_pre_save(TPMState *s)
     /*
      * Synchronize with backend completion.
      */
-    tpm_backend_finish_sync(s->be_driver);
+    if (!tpm_backend_finish_sync_timeout(s->be_driver,
+                                         TPM_TIS_PLATFORM_TIMEOUT_MS)) {
+        return -1;
+    }
 
     return 0;
 }
@@ -889,4 +1232,3 @@ const VMStateDescription vmstate_locty = {
         VMSTATE_END_OF_LIST(),
     }
 };
-

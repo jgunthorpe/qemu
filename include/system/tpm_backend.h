@@ -199,6 +199,13 @@ size_t tpm_backend_get_buffer_size(TPMBackend *s);
  */
 void tpm_backend_finish_sync(TPMBackend *s);
 
+/*
+ * Wait at most @timeout_ms for the current request and cancel on timeout.
+ * A false return does not complete the request: its TPMBackendCmd and buffers
+ * must remain valid until the frontend receives the eventual completion.
+ */
+bool tpm_backend_finish_sync_timeout(TPMBackend *s, unsigned int timeout_ms);
+
 /**
  * tpm_backend_query_tpm:
  * @s: the backend

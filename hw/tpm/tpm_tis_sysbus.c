@@ -75,6 +75,52 @@ static void tpm_tis_sysbus_request_completed(TPMIf *ti, int ret)
     tpm_tis_request_completed(s, ret);
 }
 
+static bool tpm_tis_sysbus_deliver_platform_request(TPMIf *ti,
+                                                    uint8_t locality,
+                                                    const uint8_t *request,
+                                                    size_t request_size,
+                                                    uint8_t *response,
+                                                    size_t *response_size,
+                                                    Error **errp)
+{
+    TPMStateSysBus *sbdev = TPM_TIS_SYSBUS(ti);
+
+    return tpm_tis_deliver_platform_request(&sbdev->state, locality,
+                                            request, request_size,
+                                            response, response_size, errp);
+}
+
+static bool tpm_tis_sysbus_enable_drtm(TPMIf *ti, Error **errp)
+{
+    return tpm_tis_enable_drtm(&TPM_TIS_SYSBUS(ti)->state, errp);
+}
+
+static bool tpm_tis_sysbus_drtm_no_active_locality(TPMIf *ti,
+                                                   bool *no_active,
+                                                   Error **errp)
+{
+    return tpm_tis_drtm_no_active_locality(&TPM_TIS_SYSBUS(ti)->state,
+                                           no_active, errp);
+}
+
+static bool tpm_tis_sysbus_drtm_open_localities(TPMIf *ti, Error **errp)
+{
+    return tpm_tis_drtm_open_localities(&TPM_TIS_SYSBUS(ti)->state, errp);
+}
+
+static bool tpm_tis_sysbus_drtm_close_locality(
+    TPMIf *ti, uint8_t locality, TPMDRTMLocalityCloseResult *result,
+    Error **errp)
+{
+    return tpm_tis_drtm_close_locality(&TPM_TIS_SYSBUS(ti)->state,
+                                       locality, result, errp);
+}
+
+static bool tpm_tis_sysbus_drtm_activate_locality2(TPMIf *ti, Error **errp)
+{
+    return tpm_tis_drtm_activate_locality2(&TPM_TIS_SYSBUS(ti)->state, errp);
+}
+
 static enum TPMVersion tpm_tis_sysbus_get_tpm_version(TPMIf *ti)
 {
     TPMStateSysBus *sbdev = TPM_TIS_SYSBUS(ti);
@@ -148,6 +194,15 @@ static void tpm_tis_sysbus_class_init(ObjectClass *klass, const void *data)
     dc->realize = tpm_tis_sysbus_realizefn;
     device_class_set_legacy_reset(dc, tpm_tis_sysbus_reset);
     tc->request_completed = tpm_tis_sysbus_request_completed;
+    tc->deliver_platform_request =
+        tpm_tis_sysbus_deliver_platform_request;
+    tc->enable_drtm = tpm_tis_sysbus_enable_drtm;
+    tc->drtm_no_active_locality =
+        tpm_tis_sysbus_drtm_no_active_locality;
+    tc->drtm_open_localities = tpm_tis_sysbus_drtm_open_localities;
+    tc->drtm_close_locality = tpm_tis_sysbus_drtm_close_locality;
+    tc->drtm_activate_locality2 =
+        tpm_tis_sysbus_drtm_activate_locality2;
     tc->get_version = tpm_tis_sysbus_get_tpm_version;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
